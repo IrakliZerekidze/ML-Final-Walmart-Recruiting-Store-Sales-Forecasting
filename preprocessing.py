@@ -85,11 +85,13 @@ def fill_grid(train_full, features, stores, freq="W-FRI", verbose=True):
 
     keep_cols = ["Store", "Dept", "Date", "Weekly_Sales", "IsHoliday"]
     train_full = full_index.merge(train_full[keep_cols], on=["Store", "Dept", "Date"], how="left")
-
+    train_full["was_grid_filled"] = train_full["Weekly_Sales"].isna().astype(int)
+    
     holiday_lookup = features[["Date", "IsHoliday"]].drop_duplicates()
     train_full = train_full.drop(columns=["IsHoliday"]).merge(holiday_lookup, on="Date", how="left")
 
-    train_full = train_full.merge(features, on=["Store", "Date"], how="left")
+    features_no_holiday = features.drop(columns=["IsHoliday"])
+    train_full = train_full.merge(features_no_holiday, on=["Store", "Date"], how="left")
     train_full = train_full.merge(stores, on="Store", how="left")
     return train_full
 
@@ -142,21 +144,32 @@ def time_split(df, months=3):
 # ---------------------------------------------------------------------------
 
 def run_pipeline(data_dir, out_dir, months_valid=3, save=True):
-    """Runs every step above in order and (optionally) saves parquet outputs."""
+    """Runs preprocessing with leakage-safe validation split."""
     train, test, features, stores = load_raw(data_dir)
-    train_full, test_full = merge_sources(train, test, features, stores)
+    train_full_raw, test_full = merge_sources(train, test, features, stores)
 
-    train_full = fill_grid(train_full, features, stores)
+    # Split BEFORE fill_grid to avoid future Store-Dept existence leakage
+    train_part_raw, valid_part = time_split(train_full_raw, months=months_valid)
 
+    # Fill grid only on the training part for validation experiments
+    train_part = fill_grid(train_part_raw, features, stores)
+
+    # Full train is still useful for final model training/inference later
+    train_full = fill_grid(train_full_raw, features, stores)
+
+    train_part = add_markdown_flags(train_part)
+    valid_part = add_markdown_flags(valid_part)
     train_full = add_markdown_flags(train_full)
     test_full = add_markdown_flags(test_full)
 
+    train_part = flag_negative_sales(train_part)
+    valid_part = flag_negative_sales(valid_part)
     train_full = flag_negative_sales(train_full)
 
+    train_part = add_calendar_features(train_part)
+    valid_part = add_calendar_features(valid_part)
     train_full = add_calendar_features(train_full)
     test_full = add_calendar_features(test_full)
-
-    train_part, valid_part = time_split(train_full, months=months_valid)
 
     if save:
         out_dir = Path(out_dir)
@@ -168,7 +181,6 @@ def run_pipeline(data_dir, out_dir, months_valid=3, save=True):
         print("Saved parquet files to", out_dir)
 
     return train_part, valid_part, train_full, test_full
-
 
 def load_processed(out_dir):
     """Load already-saved parquet outputs (skip re-running the pipeline)."""
