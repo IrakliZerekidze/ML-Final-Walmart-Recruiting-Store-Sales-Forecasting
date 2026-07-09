@@ -1,3 +1,62 @@
+## საერთო Preprocessing Pipeline
+
+ყველა მოდელისთვის გამოვიყენეთ საერთო preprocessing pipeline (`preprocessing.py`), რათა მონაცემების გაწმენდა, გაერთიანება და დროითი სტრუქტურის მომზადება ერთნაირად გაკეთებულიყო. ეს განსაკუთრებით მნიშვნელოვანი იყო, რადგან პროექტში რამდენიმე განსხვავებული ტიპის მოდელი გამოიყენება: tree-based მოდელები, classical time-series მოდელები და deep learning მოდელები.
+
+Pipeline-ის მიზანი იყო raw Kaggle ფაილებიდან მიგვეღო ერთიანი, სუფთა და დროით სწორად დალაგებული dataset.
+
+---
+
+### Raw Data Loading
+
+თავდაპირველად იტვირთება ოთხი ფაილი:
+
+- `train.csv.zip`
+- `test.csv.zip`
+- `features.csv.zip`
+- `stores.csv`
+
+შემდეგ `Date` სვეტი გადადის `datetime` ფორმატში, რადგან ყველა time-series ოპერაცია — sorting, splitting, calendar features და weekly grid — თარიღებზეა დამოკიდებული.
+
+---
+
+### მონაცემების გაერთიანება
+
+`train` და `test` მონაცემები ერთიანდება `features.csv` და `stores.csv` ფაილებთან.
+
+`features.csv` ამატებს შემდეგ ცვლადებს:
+
+- Temperature
+- Fuel_Price
+- MarkDown1–MarkDown5
+- CPI
+- Unemployment
+- IsHoliday
+
+`stores.csv` ამატებს:
+
+- Type
+- Size
+
+ამის შემდეგ თითოეული row შეიცავს არა მხოლოდ გაყიდვების ინფორმაციას, არამედ store-level და external economic/promotional features-საც.
+
+---
+
+### Time-based Validation Split
+
+Time-series ამოცანაში random split არასწორია, რადგან მოდელმა მომავლის ინფორმაცია არ უნდა ნახოს. ამიტომ validation set შეიქმნა დროის მიხედვით:
+
+- `train_part` — ძველი პერიოდი
+- `valid_part` — ბოლო 3 თვე
+
+Validation split სრულდება `fill_grid()`-მდე, რათა თავიდან ავირიდოთ future Store-Dept existence leakage.
+
+საწყის preprocessing ვერსიაში `fill_grid()` სრულდებოდა split-მდე. ამან შეიძლება შექმნას სუსტი leakage, რადგან validation პერიოდში პირველად გამოჩენილი Store-Dept წყვილები train grid-შიც ხელოვნურად ჩნდებოდა. საბოლოო pipeline-ში ეს გამოსწორდა:
+
+```text
+merge raw data
+→ time split
+→ fill_grid only on train_part
+
 # ML-Final-Walmart-Recruiting-Store-Sales-Forecasting
 Machine Learning Final Project
 
