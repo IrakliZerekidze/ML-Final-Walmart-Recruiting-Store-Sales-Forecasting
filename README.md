@@ -124,54 +124,230 @@ missing_target_strategy = "linear_interpolation"
 
 ---
 
-# ჩატარებული ექსპერიმენტები
+# N-BEATS
+
+## მოდელის ზოგადი აღწერა
+
+N-BEATS (Neural Basis Expansion Analysis for Time Series Forecasting) არის Deep Learning-ზე დაფუძნებული დროითი რიგების პროგნოზირების არქიტექტურა. მისი მთავარი იდეაა, რომ პროგნოზი აშენდეს მხოლოდ წარსული მნიშვნელობების საფუძველზე, რთული ხელით შექმნილი Feature Engineering-ის გარეშე. განსხვავებით RNN/LSTM ტიპის მოდელებისგან, N-BEATS არ იყენებს რეკურენტულ სტრუქტურას, ხოლო Transformer-ებისგან განსხვავებით არ არის აგებული Attention მექანიზმზე. მოდელის ძირითადი ნაწილი არის Fully Connected / MLP ბლოკები.
+
+ამ პროექტში N-BEATS გამოვიყენეთ როგორც **Global Univariate Forecasting** მოდელი. Walmart-ის ამოცანაში თითოეული `(Store, Dept)` წყვილი დამოუკიდებელ დროით რიგს წარმოადგენს. მაგალითად, `Store=1, Dept=1` არის ერთი სერია, `Store=1, Dept=2` — მეორე და ასე შემდეგ. თუმცა ცალკე მოდელის დატრენინგების ნაცვლად, ერთი გლობალური N-BEATS მოდელი სწავლობდა ყველა Store-Department სერიაზე ერთად. ეს მიდგომა სასარგებლოა, რადგან მოდელს შეუძლია სხვადასხვა დეპარტამენტებსა და მაღაზიებში არსებული საერთო სეზონური ან გაყიდვების მსგავსი pattern-ები გამოიყენოს.
+
+მოდელის input იყო მხოლოდ:
+
+- `unique_id` — Store-Department იდენტიფიკატორი;
+- `ds` — თარიღი;
+- `y` — გაყიდვების target მნიშვნელობა.
+
+ამ N-BEATS ექსპერიმენტებში მოდელი **არ იყენებდა** დამატებით ცვლადებს, როგორიცაა MarkDown, Temperature, Fuel Price, CPI, Unemployment, Store Type ან Store Size. ეს Feature-ები preprocessing pipeline-ში მაინც მზადდებოდა, რადგან ისინი საჭირო იყო სხვა მოდელებისთვის, განსაკუთრებით LightGBM/XGBoost-ისთვის და მომავალში covariate-based Deep Learning მოდელებისთვის. N-BEATS-ის ამ ვერსიის მიზანი იყო შეგვეფასებინა, რამდენად კარგად მუშაობს pure historical-sales forecasting მიდგომა.
+
+---
+
+## N-BEATS არქიტექტურა
+
+N-BEATS შედგება რამდენიმე თანმიმდევრული Block-ისგან. თითოეული Block იღებს წარსული გაყიდვების ფანჯარას და სწავლობს ორი ტიპის output-ს:
+
+- **Backcast** — ისტორიული input-ის ახსნა;
+- **Forecast** — მომავალი პერიოდის პროგნოზი.
+
+Backcast-ის მიზანია უკვე ნანახი სიგნალის გარკვეული ნაწილის ახსნა. შემდეგ ეს ახსნილი ნაწილი აკლდება input-ს და დარჩენილი residual გადაეცემა შემდეგ Block-ს. ამ გზით ყოველი შემდეგი Block სწავლობს იმას, რაც წინა Block-ებმა ვერ ახსნეს. საბოლოო პროგნოზი მიიღება ყველა Block-ის Forecast კომპონენტების ჯამით.
+
+სქემატურად:
+
+```text
+Input history
+   ↓
+Block 1 → backcast_1 + forecast_1
+   ↓
+Residual after Block 1
+   ↓
+Block 2 → backcast_2 + forecast_2
+   ↓
+Residual after Block 2
+   ↓
+...
+Final forecast = forecast_1 + forecast_2 + ...
+```
+
+N-BEATS-ში Block-ები ერთიანდება Stack-ებად. NeuralForecast-ის იმპლემენტაციაში მნიშვნელოვანია რამდენიმე Stack Type:
+
+- **Identity** — generic block, რომელიც სწავლობს წინასწარ არამკაცრად განსაზღვრულ pattern-ებს;
+- **Trend** — სწავლობს გრძელვადიან ტრენდს polynomial basis-ის გამოყენებით;
+- **Seasonality** — სწავლობს პერიოდულობას harmonic/Fourier basis-ის საშუალებით.
+
+საწყისად გამოყენებული იყო NeuralForecast-ის default ტიპის არქიტექტურა: `Identity + Trend + Seasonality`. მოგვიანებით ჩავატარეთ არქიტექტურული ექსპერიმენტები და აღმოჩნდა, რომ Walmart-ის ამ მონაცემებზე უკეთ იმუშავა უფრო სპეციალიზებულმა `Trend + Seasonality` არქიტექტურამ, სადაც გაიზარდა Trend polynomial degree, Harmonic basis და MLP layer-ების ზომა.
+
+---
+
+## Preprocessing და Leakage-safe Pipeline
+
+N-BEATS ექსპერიმენტები ეყრდნობოდა საერთო preprocessing pipeline-ს. Pipeline-ის მიზანი იყო raw Kaggle ფაილებიდან სუფთა, დროით სწორად დალაგებული dataset-ის მიღება.
+
+იტვირთებოდა ოთხი ძირითადი ფაილი:
+
+- `train.csv.zip`;
+- `test.csv.zip`;
+- `features.csv.zip`;
+- `stores.csv`.
+
+შემდეგ `Date` სვეტი გადადიოდა `datetime` ფორმატში, რადგან time-series split, weekly grid და calendar features სწორედ თარიღებზეა დამოკიდებული.
+
+`train` და `test` მონაცემები ერთიანდებოდა `features.csv` და `stores.csv` ფაილებთან. შედეგად თითოეულ row-ს ემატებოდა external და store-level ინფორმაცია:
+
+- Temperature;
+- Fuel_Price;
+- MarkDown1–MarkDown5;
+- CPI;
+- Unemployment;
+- IsHoliday;
+- Type;
+- Size.
+
+### Time-based validation split
+
+Time-series forecasting-ში random split არასწორია, რადგან მომავალის ინფორმაცია არ უნდა მოხვდეს train-ში. ამიტომ validation set შეიქმნა დროით:
+
+- `train_part` — ძველი პერიოდი;
+- `valid_part` — ბოლო 3 თვე.
+
+პირველ preprocessing ვერსიაში `fill_grid()` სრულდებოდა split-მდე:
+
+```text
+merge raw data
+→ fill_grid
+→ time_split
+```
+
+ამან შექმნა სუსტი leakage-ის რისკი. პრობლემა ის იყო, რომ თუ რომელიმე Store-Department წყვილი პირველად მხოლოდ validation პერიოდში ჩნდებოდა, `fill_grid()` მას full train range-ის basis-ზე უკვე training grid-შიც ხელოვნურად ჩასვამდა. ეს პირდაპირ target leakage არ იყო, რადგან validation-ის გაყიდვები train-ში არ ხვდებოდა, მაგრამ მოდელი იგებდა future Store-Department pair-ის არსებობას.
+
+შემდეგ pipeline შეიცვალა:
+
+```text
+merge raw data
+→ time_split
+→ fill_grid only on train_part
+```
+
+ამ ცვლილების შემდეგ training grid იქმნებოდა მხოლოდ იმ Store-Department წყვილებისთვის, რომლებიც რეალურად train პერიოდში არსებობდა. საბოლოო შედეგები ეფუძნება სწორედ ამ **leakage-safe preprocessing** ვერსიას.
+
+### `fill_grid()`
+
+Walmart-ის მონაცემებში თითოეული Store-Department წყვილი weekly time series-ია. ზოგჯერ რომელიმე კვირა საერთოდ არ გვხვდება raw data-ში. `fill_grid()` ყველა train-period Store-Department წყვილისთვის ქმნის ყველა პარასკევის row-ს.
+
+მაგალითად, თუ გვაქვს:
+
+| Store | Dept | Date | Weekly_Sales |
+|---:|---:|---|---:|
+| 1 | 1 | 2010-02-05 | 20000 |
+| 1 | 1 | 2010-02-12 | 22000 |
+| 1 | 1 | 2010-02-26 | 21000 |
+
+აკლია `2010-02-19`. `fill_grid()` ამატებს ამ row-ს:
+
+| Store | Dept | Date | Weekly_Sales |
+|---:|---:|---|---:|
+| 1 | 1 | 2010-02-05 | 20000 |
+| 1 | 1 | 2010-02-12 | 22000 |
+| 1 | 1 | 2010-02-19 | NaN |
+| 1 | 1 | 2010-02-26 | 21000 |
+
+მნიშვნელოვანია, რომ `fill_grid()` არ ავსებს target-ს 0-ით. ის მხოლოდ ამატებს row-ს და `Weekly_Sales` რჩება `NaN`. N-BEATS-ის model-specific preprocessing-ში შემდეგ გატესტილი იყო missing target values-ის შევსების ორი მეთოდი:
+
+- `zero`;
+- `linear_interpolation`.
+
+საბოლოოდ უკეთ იმუშავა `linear_interpolation`-მა. ეს ნიშნავს, რომ grid-filled missing weeks განვიხილეთ როგორც missing observations და არა აუცილებლად true zero-sales კვირები.
+
+### Negative sales
+
+Raw `Weekly_Sales` ზოგჯერ უარყოფითია. ეს შეიძლება გამოწვეული იყოს returns/refunds/adjustments-ით. preprocessing-ში შეიქმნა:
+
+- `is_negative_sales`;
+- `Weekly_Sales_clipped`.
+
+`Weekly_Sales_clipped` არის:
+
+```text
+Weekly_Sales_clipped = max(Weekly_Sales, 0)
+```
+
+N-BEATS-ზე გატესტილი იყო როგორც raw `Weekly_Sales`, ასევე `Weekly_Sales_clipped`. საბოლოო საუკეთესო კონფიგურაციაში გამოყენებული იქნა `Weekly_Sales_clipped`, რადგან საუკეთესო არქიტექტურულმა მოდელმა სწორედ ამ target-ით აჩვენა საუკეთესო შედეგი.
+
+---
+
+# ექსპერიმენტების სტრატეგია
+
+N-BEATS ექსპერიმენტები ჩატარდა ეტაპობრივად. მიზანი იყო არა მხოლოდ საუკეთესო score-ის მიღება, არამედ იმის გაგება, რომელი პარამეტრი რა გავლენას ახდენდა მოდელზე.
+
+ტესტირება დაიწყო baseline configuration-ით, შემდეგ ცალ-ცალკე შეიცვალა:
+
+- training steps;
+- learning rate;
+- batch size;
+- scaler;
+- target definition;
+- input window;
+- model capacity;
+- number of blocks;
+- stack architecture;
+- trend/seasonality basis.
+
+ყველა მნიშვნელოვანი run დაილოგა MLflow-ში. საბოლოო შედეგების შედარება ეფუძნება leakage-safe preprocessing pipeline-ზე მიღებულ შედეგებს.
+
+---
 
 ## 1. საწყისი მოდელი
 
-პირველი ექსპერიმენტი შესრულდა თითქმის Default პარამეტრებით.
+პირველი N-BEATS მოდელი გაეშვა თითქმის default პარამეტრებით:
 
-გამოყენებული იყო:
+```text
+input_size = 104
+learning_rate = 0.001
+batch_size = 32
+max_steps = 500
+target_transform = none
+```
 
-- learning_rate = 0.001
-- batch_size = 32
-- max_steps = 500
-- input_size = 104
+`input_size=104` შეირჩა იმიტომ, რომ 104 კვირა დაახლოებით ორ სრულ წლიურ სეზონურ ციკლს მოიცავს. Walmart-ის გაყიდვებში სეზონურობა ძალიან მნიშვნელოვანია, განსაკუთრებით holiday weeks-ის გამო, ამიტომ ერთი წლის ისტორია არასაკმარისი შეიძლება ყოფილიყო.
 
-ამან მოგვცა კარგი საწყისი შედეგი და გამოყენებული იქნა როგორც Reference.
+საწყისი მოდელი უკვე მნიშვნელოვნად სჯობდა Store-Department median baseline-ს, მაგრამ training steps-ის გაზრდამ შემდგომში აჩვენა, რომ 500 step არასაკმარისი იყო.
 
 ---
 
 ## 2. Training Steps
 
-შემოწმდა სხვადასხვა რაოდენობის Training Steps.
+`max_steps` განსაზღვრავს რამდენი optimization step შესრულდება training-ის დროს. ძალიან მცირე მნიშვნელობა იწვევს underfitting-ს, რადგან მოდელი ვერ ასწრებს pattern-ების სწავლას. ზედმეტად დიდი მნიშვნელობა შეიძლება overfitting-ს იწვევდეს.
 
-გატესტილი მნიშვნელობები:
+გატესტილი იყო:
 
-- 500
-- 1000
-- 1500
-- 2000
+- 500;
+- 1000;
+- 1500;
+- 2000.
 
-აღმოჩნდა, რომ 500 Step არასაკმარისი იყო.
+ძველ pipeline-ზე 500 → 1000 → 1500 მკაფიოდ აუმჯობესებდა შედეგს. leakage-safe pipeline-ზე საბოლოო საუკეთესო კონფიგურაციებში 2000 step-მა უკეთ იმუშავა. ეს მიუთითებს, რომ სწორად გაწმენდილ training setup-ში მოდელს მეტი optimization step სჭირდებოდა trend/seasonality კომპონენტების უკეთ დასასწავლად.
 
-1000 და 1500 მნიშვნელოვნად აუმჯობესებდა შედეგს.
+საბოლოოდ გამოყენებული იქნა:
 
-საბოლოოდ საუკეთესო შედეგი მიღებული იქნა 2000 Step-ზე.
+```text
+max_steps = 2000
+```
 
 ---
 
 ## 3. Learning Rate
 
-გატესტილი იყო ორი მნიშვნელობა:
+`learning_rate` განსაზღვრავს, რამდენად დიდი ნაბიჯით იცვლება მოდელის წონები ყოველ update-ზე.
 
-- 0.001
-- 0.0005
+გატესტილი იყო:
 
-Learning Rate-ის შემცირებამ მნიშვნელოვნად გააუმჯობესა Validation WMAE.
+- `0.001`;
+- `0.0005`.
 
-საბოლოოდ არჩეული იქნა:
+Learning rate-ის შემცირებამ ერთ-ერთი ყველაზე მნიშვნელოვანი გაუმჯობესება მოიტანა. `0.001` ზედმეტად აგრესიული აღმოჩნდა: მოდელი სწავლობდა სწრაფად, მაგრამ უფრო ნაკლებად სტაბილურად. `0.0005`-ზე optimization უფრო რბილი გახდა და validation WMAE შემცირდა.
 
-```
+საბოლოოდ გამოყენებული იქნა:
+
+```text
 learning_rate = 0.0005
 ```
 
@@ -179,209 +355,307 @@ learning_rate = 0.0005
 
 ## 4. Batch Size
 
+`batch_size` განსაზღვრავს რამდენი training window მუშავდება ერთ gradient update-ზე.
+
 გატესტილი იყო:
 
-- 32
-- 63
+- `32`;
+- `63/64`.
 
-Batch Size-ის გაზრდამ Validation WMAE გააუარესა.
+Batch size-ის გაზრდამ overall WMAE გააუარესა. დიდი batch იძლევა უფრო სტაბილურ gradient-ს, მაგრამ ხშირად ამცირებს gradient noise-ს, რომელიც ზოგჯერ უკეთეს generalization-ს ეხმარება. ამ dataset-ზე მცირე batch უკეთესი აღმოჩნდა.
 
 საბოლოოდ დარჩა:
 
-```
+```text
 batch_size = 32
 ```
 
 ---
 
-## 5. Scaler
+## 5. Missing Target Strategy
 
-NeuralForecast-ში შესაძლებელია Time Series-ის სკალირება Training-მდე.
+`fill_grid()`-ის შემდეგ ზოგიერთი row ხელოვნურად არის დამატებული და target არის missing. ამ row-ებისთვის გატესტილი იყო:
 
-გატესტილი იყო:
+- zero filling;
+- linear interpolation.
 
+Zero filling გულისხმობს, რომ missing week განვიხილოთ როგორც 0 გაყიდვა. Linear interpolation missing value-ს ავსებს იმავე Store-Department სერიის მეზობელი წერტილების მიხედვით.
+
+Linear interpolation-მა უკეთ იმუშავა. ეს მიუთითებს, რომ grid-filled missing weeks უფრო ხშირად ჰგავდა missing observations-ს და არა აუცილებლად real zero-sales week-ს. N-BEATS როგორც univariate sequence model ძალიან მგრძნობიარეა target sequence-ის ფორმაზე, ამიტომ ხელოვნურმა ნულებმა შეიძლება ზედმეტი sharp drops შეიტანოს სერიაში. Interpolation უფრო გლუვ და რეალისტურ sequence-ს ქმნიდა.
+
+საბოლოოდ გამოყენებული იქნა:
+
+```text
+missing_target_strategy = linear_interpolation
 ```
-identity
-```
-
-და
-
-```
-robust
-```
-
-Robust Scaler-მა გააუარესა როგორც Holiday, ასევე Overall WMAE.
-
-ამიტომ საბოლოოდ გამოყენებული იქნა
-
-```
-identity
-```
-
-ანუ მონაცემები დამატებითი სკალირების გარეშე.
 
 ---
 
-## 6. Target Column
+## 6. Scaler
 
-გატესტილი იყო ორი Target:
+NeuralForecast იძლევა scaler-ის არჩევის საშუალებას. გატესტილი იყო:
 
-- Weekly_Sales
-- Weekly_Sales_clipped
+- identity;
+- robust.
 
-Weekly_Sales_clipped უარყოფით გაყიდვებს 0-ზე აჭრიდა.
+`identity` ნიშნავს, რომ დამატებითი scaling არ გამოიყენება. `robust` ცდილობს extreme values-ის გავლენის შემცირებას.
 
-ორივე Target თითქმის იდენტურ შედეგს იძლეოდა.
+Robust scaler-მა გააუარესა შედეგი, განსაკუთრებით holiday weeks-ზე. Walmart data-ში holiday weeks ხშირად არის სწორედ ის პერიოდები, სადაც გაყიდვები მკვეთრად იზრდება. Robust scaling ამ მაღალი მნიშვნელობების გავლენას ამცირებს და მოდელს შეიძლება გაუჭირდეს holiday spikes-ის სწორად სწავლა.
 
-Raw Weekly_Sales დაახლოებით 1 WMAE-ით უკეთესი აღმოჩნდა, თუმცა განსხვავება იმდენად მცირე იყო, რომ პრაქტიკულად თანაბარ შედეგად ჩაითვალა.
+საბოლოოდ გამოყენებული იქნა:
+
+```text
+scaler_type = identity
+```
 
 ---
 
-## 7. Input Size
+## 7. Target Column
+
+გატესტილი იყო ორი target:
+
+- `Weekly_Sales`;
+- `Weekly_Sales_clipped`.
+
+Raw `Weekly_Sales` ზოგიერთ default-architecture run-ში ძალიან მცირედით უკეთესი იყო, მაგრამ სხვაობა დაახლოებით 1 WMAE-ის ფარგლებში იყო. საბოლოო საუკეთესო არქიტექტურულ configuration-ში საუკეთესო შედეგი მივიღეთ `Weekly_Sales_clipped` target-ით.
+
+`Weekly_Sales_clipped` ასევე უფრო კონსერვატიულია, რადგან უარყოფით გაყიდვებს 0-მდე ჭრის და forecast-ის ამოცანაში უარყოფითი გაყიდვების სწავლა ნაკლებად სასურველია.
+
+საბოლოოდ საუკეთესო მოდელში გამოყენებული იქნა:
+
+```text
+target_col = Weekly_Sales_clipped
+```
+
+---
+
+## 8. Input Window
+
+`input_size` განსაზღვრავს, რამდენი წარსული კვირა მიეწოდება მოდელს პროგნოზის გასაკეთებლად.
 
 გატესტილი იყო:
 
-- 104
-- 112
+- 104;
+- 112.
 
-112 კვირიანი ისტორიის გამოყენებამ შედეგი გააუარესა.
+104 კვირა მოიცავს დაახლოებით ორ წლიურ სეზონურ ციკლს. 112 კვირამ validation WMAE გააუარესა. დამატებითი ისტორია უკვე აღარ მატებდა ბევრ ახალ სეზონურ ინფორმაციას, მაგრამ ზრდიდა sequence-ის სირთულეს და noise-ს.
 
 საბოლოოდ დარჩა:
 
-```
+```text
 input_size = 104
 ```
 
 ---
 
-## 8. Model Architecture
+## 9. Fully Connected Layer-ების ზომა
 
-გატესტილი იყო უფრო დიდი Fully Connected Network.
+N-BEATS-ის block-ები აგებულია MLP layer-ებით. თავდაპირველად გამოიყენებოდა default:
 
-Default:
-
-```
-mlp_units =
+```text
 [[512,512],
  [512,512],
  [512,512]]
 ```
 
-შემდეგ გაიზარდა:
+შემდეგ შემოწმდა უფრო დიდი layer-ები:
 
+```text
+[[1024,1024],
+ [1024,1024]]
 ```
+
+და საბოლოო არქიტექტურულ ექსპერიმენტში:
+
+```text
 [[1024,1024],
  [1024,1024],
  [1024,1024]]
 ```
 
-ასევე შემოწმდა
-
-```
-n_blocks=[2,2,2]
-```
-
-ორივე შემთხვევაში Validation WMAE გაუარესდა.
-
-ეს მიუთითებს, რომ მოცემული Dataset-ისთვის Default Architecture საკმარისი აღმოჩნდა.
+მხოლოდ MLP-ის ზომის ზრდა default architecture-ზე არ იყო საკმარისი და ზოგიერთ run-ში შედეგს აუარესებდა. თუმცა Trend + Seasonality architecture-თან ერთად 1024-იანი MLP layers-მა საუკეთესო შედეგი მოგვცა. ეს აჩვენებს, რომ capacity-ის გაზრდა თავისთავად არ არის საკმარისი; ის ეფექტური გახდა მხოლოდ მაშინ, როცა model structure უკეთ მოერგო გაყიდვების trend/seasonality ბუნებას.
 
 ---
 
-# აღმოჩენილი პრობლემა
+## 10. Block-ების რაოდენობა
 
-ექსპერიმენტების მიმდინარეობისას აღმოჩნდა მნიშვნელოვანი პრობლემა საერთო preprocessing pipeline-ში.
+გატესტილი იყო:
 
-თავდაპირველად `fill_grid()` სრულდებოდა Validation Split-მდე.
-
-```
-merge
-↓
-
-fill_grid
-↓
-
-time_split
+```text
+n_blocks = [2,2,2]
 ```
 
-ამან შეიძლება გამოეწვია Future Store-Dept არსებობის შესახებ ინფორმაციის გაჟონვა (Future Store-Department Existence Leakage), რადგან Grid უკვე შეიცავდა იმ Series-ებსაც, რომლებიც მხოლოდ Validation პერიოდში ჩნდებოდა.
+default-ის ნაცვლად:
 
-Pipeline გადაიწერა შემდეგნაირად:
-
-```
-merge
-↓
-
-time_split
-↓
-
-fill_grid(train only)
+```text
+n_blocks = [1,1,1]
 ```
 
-Leakage-safe preprocessing-ის დანერგვის შემდეგ, საბოლოო ექსპერიმენტები და საუკეთესო კონფიგურაციები თავიდან გაეშვა. საბოლოო შედეგები და მოდელების შედარება ეფუძნება მხოლოდ ამ კორექტირებულ ექსპერიმენტებს.
----
-
-# საბოლოო შედეგი
-
-საუკეთესო N-BEATS მოდელმა მიიღო:
-
-| Metric | მნიშვნელობა |
-|---------|------------:|
-| Validation WMAE | **1276.83** |
-| Baseline WMAE | **2244.99** |
-| Improvement | **43.1%** |
-
-N-BEATS-მა მნიშვნელოვნად აჯობა Store-Department Median Baseline-ს და აჩვენა, რომ მხოლოდ ისტორიული გაყიდვების გამოყენებითაც შესაძლებელია საკმაოდ ზუსტი პროგნოზის მიღება.
+Block-ების რაოდენობის გაზრდამ validation WMAE გააუარესა. ეს ნიშნავს, რომ მეტი residual decomposition ამ მონაცემისთვის ზედმეტი აღმოჩნდა. დამატებითმა block-ებმა გაზარდა მოდელის სირთულე, მაგრამ არ გააუმჯობესა generalization.
 
 ---
 
-# დასკვნა
+## 11. Trend / Seasonality Architecture
 
-ჩატარებული ექსპერიმენტებიდან გამოიკვეთა, რომ ყველაზე მნიშვნელოვანი გავლენა შედეგზე ჰქონდა:
+ბოლო ეტაპზე დეტალურად შემოწმდა N-BEATS-ის შიდა არქიტექტურა. შეიცვალა:
 
-- Learning Rate-ის შემცირებას;
-- Training Steps-ის გაზრდას;
-- Input Window-ის სწორ არჩევას.
+- Stack Types;
+- Trend Polynomial Degree;
+- Harmonic Basis;
+- Seasonality Stack-ის სიღრმე;
+- Fully Connected Layer-ების ზომა.
 
-მეორეს მხრივ, Model-ის ზომის გაზრდამ, დამატებითმა Scaling-მა და Batch Size-ის გაზრდამ შედეგი ვერ გააუმჯობესა.
+Architecture sweep-ის შედეგები:
 
-საბოლოოდ არჩეული იქნა შედარებით მარტივი N-BEATS არქიტექტურა, რომელმაც საუკეთესო შედეგი აჩვენა მოცემულ ამოცანაზე.
+| Architecture | Validation WMAE | Holiday WMAE | Non-Holiday WMAE |
+|---|---:|---:|---:|
+| Trend + Seasonality | 1289.64 | 1402.17 | 1246.29 |
+| Trend + Seasonality + Harmonics = 5 | 1276.95 | 1385.33 | 1235.21 |
+| Trend Degree = 3 | **1276.74** | 1398.02 | 1230.02 |
+| Deeper Seasonality | 1286.70 | 1356.11 | 1259.96 |
+| Identity + Trend + Seasonality | 1294.83 | 1447.48 | 1236.02 |
 
+თავდაპირველად გამოყენებული იყო default `Identity + Trend + Seasonality` არქიტექტურა. Sweep-მა აჩვენა, რომ Walmart-ის მონაცემებისთვის უკეთესი აღმოჩნდა უფრო ფოკუსირებული `Trend + Seasonality` სტრუქტურა.
 
-## ექსპერიმენტების შეჯამება
+საუკეთესო შედეგი მიღებული იქნა შემდეგი კონფიგურაციით:
 
-| ექსპერიმენტი | ძირითადი ცვლილება | Validation WMAE | შედეგი |
-|--------------|-------------------|----------------:|---------|
-| Baseline | Store-Dept Median | **2244.99** | Reference |
-| N-BEATS v1 | input=104, lr=0.001, steps=500 | ~1300 | საწყისი მოდელი |
-| Learning Rate | 0.001 → **0.0005** | გაუმჯობესდა | ✅ დარჩა |
-| Training Steps | 500 → 1000 | გაუმჯობესდა | ✅ |
-| Training Steps | 1000 → 1500 | გაუმჯობესდა | ✅ |
-| Training Steps | 1500 → **2000** | **1277.79** | ✅ საუკეთესო clipped შედეგი |
-| Batch Size | 32 → 63 | გაუარესდა | ❌ |
-| Scaler | Robust | **1179 → 1295** (Leakage-safe pipeline-ზე ასევე გაუარესდა) | ❌ |
-| Target | Weekly_Sales_clipped → Weekly_Sales | **1276.83** | მცირედით უკეთესი |
-| Input Window | 104 → 112 | **1282.99** | ❌ |
-| Architecture | n_blocks=[2,2,2] | **1312.47** | ❌ |
-| Architecture | MLP 1024×1024 | **1294.83** | ❌ |
+```text
+Stack Types       = Trend + Seasonality
+Blocks            = [1,1]
+Polynomial Degree = 3
+Harmonics         = 3
+MLP Units         = [[1024,1024],
+                     [1024,1024],
+                     [1024,1024]]
+```
 
+Trend Stack-ის polynomial degree-ის გაზრდამ მოდელს მისცა საშუალება უფრო მოქნილი გრძელვადიანი trend ესწავლა. Harmonic basis-ის გამოყენებამ seasonality component უფრო მდიდარი გახადა. Fully Connected layer-ების გაფართოებამ კი გაზარდა model capacity, მაგრამ უკვე სწორად შერჩეულ trend/seasonality structure-ში.
 
-## საბოლოოდ არჩეული მოდელი
+ერთ მომენტში იგივე არქიტექტურის დამოუკიდებელ run-ზე შედეგი გაუარესდა. შემოწმების შემდეგ აღმოჩნდა, რომ run ზუსტად იგივე configuration-ით არ იყო გაშვებული: `mlp_units` განსხვავებული იყო. სწორი configuration-ის ხელახლა გაშვებისას იგივე საუკეთესო შედეგი განმეორდა:
+
+```text
+Validation WMAE = 1276.74
+```
+
+ამიტომ საბოლოოდ დადგინდა, რომ გაუმჯობესება შემთხვევითი არ ყოფილა. საუკეთესო შედეგი მოგვცა არა default architecture-მა, არამედ trend/seasonality-ზე მორგებულმა architecture-მა.
+
+---
+
+# Leakage-safe შედეგები და Baseline
+
+საბოლოო შეფასება ეფუძნება leakage-safe preprocessing pipeline-ს.
+
+Baseline იყო Store-Department median baseline:
+
+```text
+Baseline WMAE = 2244.99
+```
+
+საუკეთესო N-BEATS შედეგი:
+
+```text
+Validation WMAE = 1276.74
+```
+
+გაუმჯობესება:
+
+```text
+Improvement = 968.25 WMAE
+Improvement % = 43.13%
+```
+
+---
+
+# ექსპერიმენტების შეჯამება
+
+| ექსპერიმენტი | ცვლილება | შედეგი | ინტერპრეტაცია |
+|---|---|---:|---|
+| Baseline | Store-Dept Median | 2244.99 | Reference |
+| Learning Rate | 0.001 → 0.0005 | გაუმჯობესდა | უფრო სტაბილური optimization |
+| Training Steps | 500 → 2000 | გაუმჯობესდა | მოდელს მეტი დრო დასჭირდა pattern-ების სასწავლად |
+| Batch Size | 32 → 63/64 | გაუარესდა | მცირე batch უკეთ გენერალიზდებოდა |
+| Missing Target | Zero → Linear Interpolation | გაუმჯობესდა | ხელოვნური ნულების ნაცვლად smoother sequence |
+| Scaler | Identity → Robust | გაუარესდა | holiday spikes-ის გავლენა შემცირდა |
+| Target | Weekly_Sales vs clipped | მსგავსი | clipped საბოლოო არქიტექტურაზე საუკეთესო |
+| Input Window | 104 → 112 | გაუარესდა | დამატებითმა ისტორიამ noise გაზარდა |
+| Blocks | [1,1,1] → [2,2,2] | გაუარესდა | ზედმეტი model complexity |
+| MLP Size | 512 → 1024 | mixed | მხოლოდ trend/seasonality architecture-ში იმუშავა |
+| Architecture | Default → Trend + Seasonality | **საუკეთესო** | მონაცემების trend/seasonality ბუნებას უკეთ მოერგო |
+
+---
+
+# საბოლოოდ არჩეული მოდელი
 
 | პარამეტრი | მნიშვნელობა |
-|-----------|-------------|
+|---|---|
 | Model | N-BEATS |
+| Model Type | Global Univariate |
 | Forecast Horizon | 14 კვირა |
 | Input Window | 104 კვირა |
 | Learning Rate | 0.0005 |
 | Batch Size | 32 |
 | Training Steps | 2000 |
 | Loss | MAE |
-| Target | Weekly_Sales *(ან Weekly_Sales_clipped, თუ მას დატოვებ)* |
+| Target | Weekly_Sales_clipped |
 | Missing Target Strategy | Linear Interpolation |
 | Scaler | Identity |
-| Stack Types | Identity + Trend + Seasonality |
-| Blocks | [1,1,1] |
-| MLP Units | [[512,512],[512,512],[512,512]] |
-| Validation WMAE | **1276.83** *(ან 1277.79 clipped-ის შემთხვევაში)* |
+| Stack Types | Trend + Seasonality |
+| Blocks | [1,1] |
+| Polynomial Degree | 3 |
+| Harmonics | 3 |
+| MLP Units | [[1024,1024],[1024,1024],[1024,1024]] |
+| Validation WMAE | **1276.74** |
+| Baseline WMAE | **2244.99** |
+| Improvement | **43.13%** |
+
+---
+
+# Overfitting / Generalization Analysis
+
+საუკეთესო run-ზე train-tail WMAE იყო:
+
+```text
+train_tail_wmae = 1806.29
+```
+
+ხოლო validation WMAE:
+
+```text
+valid_wmae = 1276.74
+```
+
+Generalization gap ითვლებოდა ასე:
+
+```text
+valid_wmae - train_tail_wmae = -529.55
+```
+
+ეს კლასიკურ overfitting-ს არ აჩვენებს, რადგან validation error train-tail error-ზე უარესი არ არის. პირიქით, validation period უფრო მარტივი აღმოჩნდა, ან train-tail split შეიცავდა უფრო რთულ Store-Department-week შემთხვევებს.
+
+ამიტომ overfitting-ის მტკიცებულება ამ შედეგებში არ ჩანს. თუმცა ეს არ ნიშნავს, რომ მოდელი იდეალურად generalizes ყველა პერიოდში. უფრო სწორი ინტერპრეტაციაა, რომ train-tail და validation periods სირთულით განსხვავდებოდა.
+
+---
+
+# დასკვნა
+
+N-BEATS-მა მნიშვნელოვნად აჯობა Store-Department median baseline-ს და აჩვენა, რომ მხოლოდ historical sales sequence-ზეც შესაძლებელია ძლიერი პროგნოზის აგება.
+
+ყველაზე დიდი გავლენა შედეგზე ჰქონდა:
+
+- learning rate-ის შემცირებას;
+- training steps-ის გაზრდას;
+- missing target values-ის linear interpolation-ით შევსებას;
+- N-BEATS-ის architecture-ის trend/seasonality-ზე მორგებას.
+
+მეორეს მხრივ, შედეგი გააუარესა:
+
+- batch size-ის გაზრდამ;
+- robust scaler-ის გამოყენებამ;
+- input window-ის 112-მდე გაზრდამ;
+- block-ების რაოდენობის ზრდამ;
+- არასწორ architecture/capacity კომბინაციებმა.
+
+საბოლოო შედეგი აჩვენებს, რომ N-BEATS-ისთვის მხოლოდ ჰიპერპარამეტრების tuning არ იყო საკმარისი. საუკეთესო შედეგი მივიღეთ მაშინ, როცა მოდელის შიდა არქიტექტურა უკეთ მოვარგეთ Walmart sales-ის ბუნებას — ანუ trend-სა და seasonality-ს.
+
 | Baseline WMAE | **2244.99** |
 | Improvement over Baseline | **43.1%** |
