@@ -31,9 +31,7 @@ THANKSGIVING = pd.to_datetime(["2010-11-26", "2011-11-25", "2012-11-23", "2013-1
 CHRISTMAS = pd.to_datetime(["2010-12-31", "2011-12-30", "2012-12-28", "2013-12-27"])
 
 
-# ---------------------------------------------------------------------------
 # Metric
-# ---------------------------------------------------------------------------
 
 def weighted_mae(y_true, y_pred, is_holiday):
     """Competition metric: holiday weeks weighted 5x."""
@@ -41,9 +39,7 @@ def weighted_mae(y_true, y_pred, is_holiday):
     return np.sum(weights * np.abs(y_true - y_pred)) / np.sum(weights)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline steps (each one is testable/reusable on its own)
-# ---------------------------------------------------------------------------
+# Pipeline steps
 
 def load_raw(data_dir):
     data_dir = Path(data_dir)
@@ -139,9 +135,7 @@ def time_split(df, months=3):
     return train_part, valid_part
 
 
-# ---------------------------------------------------------------------------
 # Orchestrator
-# ---------------------------------------------------------------------------
 
 def run_pipeline(data_dir, out_dir, months_valid=3, save=True):
     """Runs preprocessing with leakage-safe validation split."""
