@@ -1,1464 +1,806 @@
-### მნიშვნელოვანი დაკვირვება: დროითი სერიების უწყვეტობა
+# Walmart Store Sales Forecasting
+Walmart-ის მაღაზიებისა და დეპარტამენტების ყოველკვირეული გაყიდვების პროგნოზირება Kaggle-ის [Walmart Store Sales Forecasting](https://www.kaggle.com/competitions/walmart-recruiting-store-sales-forecasting) კონკურსის მონაცემებზე.
 
-TFT მოდელის იმპლემენტაციის დროს აღმოვაჩინეთ მონაცემების მნიშვნელოვანი სტრუქტურული თავისებურება, რომელიც წინა ექსპერიმენტებში (N-BEATS და DLinear) არ გამოჩენილა.
+**MLflow ექსპერიმენტები:** [DagsHub](https://dagshub.com/izere23/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting.mlflow/#/experiments)
 
-EDA-ის გაფართოების შემდეგ აღმოჩნდა, რომ `Store + Dept` დროითი სერიები სრულად უწყვეტი არ არის. Time-based split-ის შემდეგ:
 
-- Training ნაწილში იყო **3,321** უნიკალური `Store + Dept` სერია;
-- Validation ნაწილში იყო **3,104** სერია;
-- **227** სერია არსებობდა მხოლოდ training პერიოდში და validation-ში აღარ გვხვდებოდა;
-- **10** ახალი სერია პირველად მხოლოდ validation პერიოდში გამოჩნდა.
+პროექტში შედარებულია სამი ძირითადი მიდგომა:
 
-გარდა ამისა, validation პერიოდი 14 კვირას მოიცავდა, თუმცა მხოლოდ **2,803** სერიას ჰქონდა ყველა 14 კვირის ჩანაწერი. დანარჩენ სერიებს validation-ში მხოლოდ 1-13 კვირა ჰქონდათ.
+- **Tree-based მოდელები:** LightGBM, XGBoost;
+- **Deep Learning მოდელები:** N-BEATS, DLinear, Temporal Fusion Transformer (TFT);
+- **კლასიკური დროითი რიგების მოდელები:** Prophet, ARIMA, Seasonal AutoARIMA (SARIMA).
 
-N-BEATS და DLinear-ის შემთხვევაში ეს პრობლემა არ გამოვლინდა, რადგან ორივე მოდელი პროგნოზს ქმნის მხოლოდ training მონაცემებზე დაყრდნობით და ავტომატურად აგენერირებს ყველა ცნობილი სერიისთვის მომდევნო `h=14` კვირის პროგნოზს. შეფასების ეტაპზე ეს პროგნოზები უბრალოდ ებმება რეალურად არსებულ validation მონაცემებს, ხოლო ის პროგნოზები, რომლებსაც შესაბამისი რეალური observation არ გააჩნიათ, WMAE-ის გამოთვლაში არ მონაწილეობს.
+ყველა მნიშვნელოვანი ექსპერიმენტი დალოგილია **MLflow/DagsHub**-ში. მოდელები შეფასებულია ერთიანი time-based validation split-ითა და კონკურსის ოფიციალური **Weighted Mean Absolute Error (WMAE)** მეტრიკით.
 
-TFT განსხვავებულად მუშაობს. რადგან მოდელი იყენებს **future covariates**-ს (მაგალითად `Temperature`, `Fuel_Price`, `IsHoliday`, `MarkDown`, `CPI`, `Unemployment` და კალენდარულ feature-ებს), პროგნოზის გაკეთებისას მას სჭირდება სრული future dataframe ყველა training სერიისა და ყველა მომდევნო 14 კვირისთვის. Validation dataframe-ში ასეთი სრული ბადე არ არსებობდა, რის გამოც NeuralForecast აბრუნებდა შეცდომას:
-
-> `There are missing combinations of ids and times in futr_df.`
-
-ამ პრობლემის გადასაჭრელად საჭიროა prediction-ისთვის ცალკე სრული future dataframe-ის აგება. იგი უნდა შეიქმნას training-ში არსებული ყველა `unique_id`-ისთვის და ყველა მომდევნო 14 კვირისთვის (`make_future_dataframe()`), შემდეგ კი მას უნდა დაემატოს შესაბამისი future covariates. შეფასება კვლავ მხოლოდ რეალურად არსებულ validation observations-ზე ხდება, ამიტომ მოდელის შეფასების პროცესი უცვლელი რჩება.
-
-## საერთო Preprocessing Pipeline
-
-ყველა მოდელისთვის გამოვიყენეთ საერთო preprocessing pipeline (`preprocessing.py`), რათა მონაცემების გაწმენდა, გაერთიანება და დროითი სტრუქტურის მომზადება ერთნაირად გაკეთებულიყო. ეს განსაკუთრებით მნიშვნელოვანი იყო, რადგან პროექტში რამდენიმე განსხვავებული ტიპის მოდელი გამოიყენება: tree-based მოდელები, classical time-series მოდელები და deep learning მოდელები.
-
-Pipeline-ის მიზანი იყო raw Kaggle ფაილებიდან მიგვეღო ერთიანი, სუფთა და დროით სწორად დალაგებული dataset.
+> **საუკეთესო local validation შედეგი:** **XGBoost — 1254.85 WMAE**  
+> **საუკეთესო Deep Learning შედეგი:** **N-BEATS — 1276.74 WMAE**  
+> **Kaggle-ზე შეფასებული მოდელი:** **LightGBM — 2811.66 Private WMAE**
 
 ---
 
-### Raw Data Loading
+## პროექტი
 
-თავდაპირველად იტვირთება ოთხი ფაილი:
+1. [ამოცანა და მონაცემები](https://www.kaggle.com/competitions/walmart-recruiting-store-sales-forecasting)
+2. [Exploratory Data Analysis](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/eda-walmart.ipynb)
+3. [საერთო preprocessing pipeline](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/preprocessing.py)
+4. [LightGBM](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_LightGBM.ipynb)
+5. [XGBoost](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model-experiment-xgboost.ipynb)
+6. [N-BEATS](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_NBEATS.ipynb)
+7. [DLinear](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_DLinear.ipynb)
+8. [Temporal Fusion Transformer](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_TFT.ipynb)
+9. [Prophet](#prophet)
+10. [ARIMA](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_ARIMA.ipynb)
+11. [Seasonal AutoARIMA](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_SARIMA.ipynb)
 
-- `train.csv.zip`
-- `test.csv.zip`
-- `features.csv.zip`
-- `stores.csv`
-
-შემდეგ `Date` სვეტი გადადის `datetime` ფორმატში, რადგან ყველა time-series ოპერაცია — sorting, splitting, calendar features და weekly grid — თარიღებზეა დამოკიდებული.
-
----
-
-### მონაცემების გაერთიანება
-
-`train` და `test` მონაცემები ერთიანდება `features.csv` და `stores.csv` ფაილებთან.
-
-`features.csv` ამატებს შემდეგ ცვლადებს:
-
-- Temperature
-- Fuel_Price
-- MarkDown1–MarkDown5
-- CPI
-- Unemployment
-- IsHoliday
-
-`stores.csv` ამატებს:
-
-- Type
-- Size
-
-ამის შემდეგ თითოეული row შეიცავს არა მხოლოდ გაყიდვების ინფორმაციას, არამედ store-level და external economic/promotional features-საც.
-
----
-
-### Time-based Validation Split
-
-Time-series ამოცანაში random split არასწორია, რადგან მოდელმა მომავლის ინფორმაცია არ უნდა ნახოს. ამიტომ validation set შეიქმნა დროის მიხედვით:
-
-- `train_part` — ძველი პერიოდი
-- `valid_part` — ბოლო 3 თვე
-
-Validation split სრულდება `fill_grid()`-მდე, რათა თავიდან ავირიდოთ future Store-Dept existence leakage.
-
-საწყის preprocessing ვერსიაში `fill_grid()` სრულდებოდა split-მდე. ამან შეიძლება შექმნას სუსტი leakage, რადგან validation პერიოდში პირველად გამოჩენილი Store-Dept წყვილები train grid-შიც ხელოვნურად ჩნდებოდა. საბოლოო pipeline-ში ეს გამოსწორდა:
+## პროექტის სტრუქტურა
 
 ```text
-merge raw data
-→ time split
-→ fill_grid only on train_part
-
-# ML-Final-Walmart-Recruiting-Store-Sales-Forecasting
-Machine Learning Final Project
-
-# N-BEATS ექსპერიმენტები
-
-## მოდელის მოკლე აღწერა
-
-N-BEATS (Neural Basis Expansion Analysis for Time Series Forecasting) არის Deep Learning-ზე დაფუძნებული დროითი რიგების პროგნოზირების მოდელი, რომელიც სპეციალურად Forecasting ამოცანებისთვის შეიქმნა. განსხვავებით LSTM-ისა და Transformer-ის მსგავსი მოდელებისგან, N-BEATS არ იყენებს რეკურენტულ ან attention მექანიზმებს. მოდელი აგებულია სრულად Fully Connected (MLP) ბლოკებისგან.
-
-N-BEATS შედგება რამდენიმე Block-ისგან. თითოეული Block სწავლობს დროითი რიგის გარკვეულ ნაწილს (Trend, Seasonality ან Generic Pattern), ხოლო შემდეგ Backcast მექანიზმით ხსნის უკვე ახსნილ ინფორმაციას და Forecast ნაწილს გადასცემს შემდეგ Block-ს. საბოლოო პროგნოზი მიიღება ყველა Block-ის Forecast-ების ჯამით.
-
-ამ პროექტში გამოყენებულია NeuralForecast ბიბლიოთეკის N-BEATS იმპლემენტაცია.
-
----
-
-# გამოყენებული მონაცემები
-
-მოდელი მუშაობდა **Global Univariate Forecasting** რეჟიმში.
-
-ეს ნიშნავს, რომ თითოეული `(Store, Dept)` წყვილი განიხილებოდა როგორც დამოუკიდებელი დროითი რიგი, თუმცა ერთი გლობალური N-BEATS მოდელი სწავლობდა ყველა სერიაზე ერთდროულად.
-
-მოდელის შესაყვანი DataFrame შედგებოდა მხოლოდ სამი სვეტისგან:
-
-- `unique_id` — Store-Dept იდენტიფიკატორი
-- `ds` — თარიღი
-- `y` — Weekly Sales
-
-ამ ვერსიაში N-BEATS არ იყენებდა დამატებით Feature-ებს, როგორიცაა:
-
-- Temperature
-- Fuel Price
-- CPI
-- Unemployment
-- Store Type
-- Store Size
-- MarkDown
-- Calendar Features
-
-ეს Feature-ები საერთო preprocessing pipeline-ში იქმნებოდა, თუმცა N-BEATS-ის პირველი ვერსია მხოლოდ გაყიდვების ისტორიულ მნიშვნელობებზე იყო დაფუძნებული.
-
----
-
-# გამოყენებული პარამეტრები
-
-საბოლოოდ საუკეთესო შედეგი მიღებული იქნა შემდეგი პარამეტრებით:
-
-```python
-input_size = 104
-horizon = 14
-
-learning_rate = 0.0005
-batch_size = 32
-max_steps = 2000
-
-loss = MAE
-
-scaler_type = "identity"
-
-stack_types = ["identity", "trend", "seasonality"]
-n_blocks = [1,1,1]
-mlp_units = [[512,512],[512,512],[512,512]]
-
-missing_target_strategy = "linear_interpolation"
+ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/
+│
+├── README.md
+│   └── პროექტის მთავარი დოკუმენტაცია: ამოცანა, EDA, preprocessing,
+│       მოდელების ექსპერიმენტები და საბოლოო შედეგების შედარება.
+│
+├── .gitignore
+│   └── განსაზღვრავს ფაილებსა და საქაღალდეებს, რომლებიც GitHub-ზე
+│       არ უნდა აიტვირთოს, მაგალითად მონაცემები, checkpoints და cache ფაილები.
+│
+├── preprocessing.py
+│   └── საერთო preprocessing pipeline: მონაცემების ჩატვირთვა, გაერთიანება,
+│       time-based split, weekly grid-ის შევსება და calendar feature-ების შექმნა.
+│
+├── eda-walmart.ipynb
+│   └── მონაცემების საწყისი კვლევა: განაწილებები, missing values,
+│       სეზონურობა, holiday ეფექტები, Store Type და Store Size.
+│
+├── model_experiment_LightGBM.ipynb
+│   └── LightGBM-ის training და ექსპერიმენტები: categorical encoding,
+│       target statistics, lag feature-ები, regularization და შეფასება.
+│
+├── model-experiment-xgboost.ipynb
+│   └── XGBoost-ის ექსპერიმენტები leakage-safe feature engineering-ით,
+│       L1 objective-ითა და hyperparameter tuning-ით.
+│
+├── model_experiment_NBEATS.ipynb
+│   └── N-BEATS global univariate forecasting ექსპერიმენტები:
+│       input window, learning rate, training steps და architecture tuning.
+│
+├── model_experiment_DLinear.ipynb
+│   └── DLinear-ის ექსპერიმენტები: input size, moving-average window,
+│       batch size, scaler და training duration.
+│
+├── model_experiment_TFT.ipynb
+│   └── Temporal Fusion Transformer-ის ექსპერიმენტები calendar, static,
+│       MarkDown და external covariates-ის სხვადასხვა კომბინაციით.
+│
+├── model_experiment_ARIMA.ipynb
+│   └── ARIMA ექსპერიმენტები თითოეული Store–Department სერიისთვის,
+│       სხვადასხვა order-ით, interpolation-ითა და fallback სტრატეგიით.
+│
+└── model_experiment_SARIMA.ipynb
+    └── Seasonal ARIMA / AutoARIMA ექსპერიმენტები 52-კვირიანი
+        სეზონურობის გამოყენებით.
 ```
 
----
+## ამოცანა და მონაცემები
 
-# N-BEATS
+პროექტის მიზანია Walmart-ის სხვადასხვა მაღაზიასა და დეპარტამენტში ყოველკვირეული გაყიდვების პროგნოზირება. პროგნოზი უნდა შეიქმნას არა მხოლოდ მაღაზიის, არამედ კონკრეტული დეპარტამენტისა და კვირის დონეზე, ამიტომ ერთი observation განისაზღვრება `(Store, Dept, Date)` კომბინაციით, ხოლო საპროგნოზო ცვლადია `Weekly_Sales`.
 
-## მოდელის ზოგადი აღწერა
+ეს სტრუქტურა ამოცანას მნიშვნელოვნად ართულებს. მონაცემები არ წარმოადგენს ერთ დიდ დროით რიგს, რომელზეც ერთი სეზონური მოდელის მორგება იქნებოდა საკმარისი. რეალურად გვაქვს ათასობით პარალელური დროითი რიგი: მაგალითად, `Store=1, Dept=1` ერთი სერიაა, `Store=1, Dept=2` მეორე, ხოლო იგივე დეპარტამენტი სხვა მაღაზიაში უკვე ცალკე სერიას ქმნის. ამ სერიებს ერთმანეთისგან განსხვავებული მასშტაბი, ისტორიის სიგრძე, სეზონურობა და holiday-ებზე რეაქცია აქვთ.
 
-N-BEATS (Neural Basis Expansion Analysis for Time Series Forecasting) არის Deep Learning-ზე დაფუძნებული დროითი რიგების პროგნოზირების არქიტექტურა. მისი მთავარი იდეაა, რომ პროგნოზი აშენდეს მხოლოდ წარსული მნიშვნელობების საფუძველზე, რთული ხელით შექმნილი Feature Engineering-ის გარეშე. განსხვავებით RNN/LSTM ტიპის მოდელებისგან, N-BEATS არ იყენებს რეკურენტულ სტრუქტურას, ხოლო Transformer-ებისგან განსხვავებით არ არის აგებული Attention მექანიზმზე. მოდელის ძირითადი ნაწილი არის Fully Connected / MLP ბლოკები.
+მონაცემები ოთხი ძირითადი ფაილიდან მოდის:
 
-ამ პროექტში N-BEATS გამოვიყენეთ როგორც **Global Univariate Forecasting** მოდელი. Walmart-ის ამოცანაში თითოეული `(Store, Dept)` წყვილი დამოუკიდებელ დროით რიგს წარმოადგენს. მაგალითად, `Store=1, Dept=1` არის ერთი სერია, `Store=1, Dept=2` — მეორე და ასე შემდეგ. თუმცა ცალკე მოდელის დატრენინგების ნაცვლად, ერთი გლობალური N-BEATS მოდელი სწავლობდა ყველა Store-Department სერიაზე ერთად. ეს მიდგომა სასარგებლოა, რადგან მოდელს შეუძლია სხვადასხვა დეპარტამენტებსა და მაღაზიებში არსებული საერთო სეზონური ან გაყიდვების მსგავსი pattern-ები გამოიყენოს.
+| ფაილი | დანიშნულება |
+|---|---|
+| `train.csv` | ისტორიული გაყიდვები და target `Weekly_Sales` |
+| `test.csv` | პერიოდი, რომლისთვისაც საბოლოო პროგნოზი უნდა შეიქმნას |
+| `features.csv` | ეკონომიკური, კალენდარული და promotional ცვლადები |
+| `stores.csv` | მაღაზიის ტიპი და ზომა |
 
-მოდელის input იყო მხოლოდ:
 
-- `unique_id` — Store-Department იდენტიფიკატორი;
-- `ds` — თარიღი;
-- `y` — გაყიდვების target მნიშვნელობა.
+`train.csv` და `test.csv` შეიცავს ძირითად იდენტიფიკატორებს — `Store`, `Dept`, `Date` და `IsHoliday`. Training მონაცემებში დამატებით გვაქვს `Weekly_Sales`, რომელიც მოდელებმა უნდა ისწავლონ. `features.csv` თითოეული მაღაზიისა და კვირისთვის გვაწვდის `Temperature`, `Fuel_Price`, `CPI`, `Unemployment` და `MarkDown1–MarkDown5` ცვლადებს. `stores.csv` კი აღწერს მაღაზიის ტიპსა და ზომას.
 
-ამ N-BEATS ექსპერიმენტებში მოდელი **არ იყენებდა** დამატებით ცვლადებს, როგორიცაა MarkDown, Temperature, Fuel Price, CPI, Unemployment, Store Type ან Store Size. ეს Feature-ები preprocessing pipeline-ში მაინც მზადდებოდა, რადგან ისინი საჭირო იყო სხვა მოდელებისთვის, განსაკუთრებით LightGBM/XGBoost-ისთვის და მომავალში covariate-based Deep Learning მოდელებისთვის. N-BEATS-ის ამ ვერსიის მიზანი იყო შეგვეფასებინა, რამდენად კარგად მუშაობს pure historical-sales forecasting მიდგომა.
+მთლიან მონაცემებში წარმოდგენილია **45 მაღაზია** და დაახლოებით **3,331 უნიკალური Store–Department დროითი რიგი**. სწორედ ამიტომ პროექტში შევადარეთ ერთმანეთისგან განსხვავებული მოდელირების სტრატეგიები. Tree-based მოდელები ყველა row-ს ერთ დიდ tabular dataset-ად ამუშავებენ; N-BEATS, DLinear და TFT ერთი global neural model-ით სწავლობენ მრავალ სერიას; Prophet, ARIMA და SARIMA კი თითოეულ სერიას დამოუკიდებლად ამუშავებენ.
 
----
+## შეფასების მეტრიკა
 
-## N-BEATS არქიტექტურა
-
-N-BEATS შედგება რამდენიმე თანმიმდევრული Block-ისგან. თითოეული Block იღებს წარსული გაყიდვების ფანჯარას და სწავლობს ორი ტიპის output-ს:
-
-- **Backcast** — ისტორიული input-ის ახსნა;
-- **Forecast** — მომავალი პერიოდის პროგნოზი.
-
-Backcast-ის მიზანია უკვე ნანახი სიგნალის გარკვეული ნაწილის ახსნა. შემდეგ ეს ახსნილი ნაწილი აკლდება input-ს და დარჩენილი residual გადაეცემა შემდეგ Block-ს. ამ გზით ყოველი შემდეგი Block სწავლობს იმას, რაც წინა Block-ებმა ვერ ახსნეს. საბოლოო პროგნოზი მიიღება ყველა Block-ის Forecast კომპონენტების ჯამით.
-
-სქემატურად:
+კონკურსის ოფიციალური შეფასების მეტრიკაა **Weighted Mean Absolute Error (WMAE)**:
 
 ```text
-Input history
-   ↓
-Block 1 → backcast_1 + forecast_1
-   ↓
-Residual after Block 1
-   ↓
-Block 2 → backcast_2 + forecast_2
-   ↓
-Residual after Block 2
-   ↓
-...
-Final forecast = forecast_1 + forecast_2 + ...
+WMAE = Σ(wᵢ × |yᵢ − ŷᵢ|) / Σwᵢ
 ```
 
-N-BEATS-ში Block-ები ერთიანდება Stack-ებად. NeuralForecast-ის იმპლემენტაციაში მნიშვნელოვანია რამდენიმე Stack Type:
+სადაც `yᵢ` არის რეალური გაყიდვა, `ŷᵢ` — მოდელის პროგნოზი, ხოლო `wᵢ` observation-ის წონა. ჩვეულებრივ კვირაზე წონა არის `1`, holiday კვირაზე კი `5`.
 
-- **Identity** — generic block, რომელიც სწავლობს წინასწარ არამკაცრად განსაზღვრულ pattern-ებს;
-- **Trend** — სწავლობს გრძელვადიან ტრენდს polynomial basis-ის გამოყენებით;
-- **Seasonality** — სწავლობს პერიოდულობას harmonic/Fourier basis-ის საშუალებით.
+ეს განსხვავება მნიშვნელოვანია, რადგან მოდელს ყველა კვირაზე თანაბარი პასუხისმგებლობა არ აქვს. მაგალითად, Thanksgiving-ის კვირაში დაშვებული 1,000 ერთეულის შეცდომა საბოლოო score-ზე ხუთჯერ უფრო ძლიერ მოქმედებს, ვიდრე იგივე შეცდომა ჩვეულებრივ კვირაში. შედეგად, მხოლოდ საშუალო პერიოდის კარგად პროგნოზირება საკმარისი არ არის — მოდელმა holiday spikes-იც უნდა დაიჭიროს.
 
-საწყისად გამოყენებული იყო NeuralForecast-ის default ტიპის არქიტექტურა: `Identity + Trend + Seasonality`. მოგვიანებით ჩავატარეთ არქიტექტურული ექსპერიმენტები და აღმოჩნდა, რომ Walmart-ის ამ მონაცემებზე უკეთ იმუშავა უფრო სპეციალიზებულმა `Trend + Seasonality` არქიტექტურამ, სადაც გაიზარდა Trend polynomial degree, Harmonic basis და MLP layer-ების ზომა.
+Training-ის დროს ყველა მოდელში პირდაპირ WMAE loss არ გამოგვიყენებია. NeuralForecast მოდელებში loss იყო MAE, LightGBM-სა და XGBoost-ში კი საუკეთესო შედეგები L1 objective-მა მოგვცა. ეს არჩევანი მეტრიკასთან ლოგიკურად ახლოსაა, რადგან WMAE არსებითად weighted absolute error-ია. საბოლოო შეფასება ყველა შემთხვევაში ერთნაირი WMAE ფუნქციით შესრულდა, რათა სხვადასხვა ოჯახის მოდელები სამართლიანად შეგვედარებინა.
+
+## Exploratory Data Analysis
+
+EDA-ს მიზანი იყო მონაცემების სტრუქტურის, სეზონურობის, missing values-ისა და feature-ების შესაძლო მნიშვნელობის შეფასება მოდელირებამდე.
+
+### 1. Missing values
+
+ყველაზე მეტი missing value გვხვდება `MarkDown1–MarkDown5` სვეტებში. Promotional მონაცემები მხოლოდ ისტორიის ნაწილისთვის არის ხელმისაწვდომი, ამიტომ raw MarkDown values-ის პირდაპირ გამოყენებასთან ერთად შეიქმნა შესაბამისი არსებობის ინდიკატორებიც.
+
+<!-- EDA IMAGE: notebook cell 16 -->
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/8d4acd77-a0bd-492e-b9b2-be6e967d50a5" />
+
+### 2. Weekly Sales-ის განაწილება
+
+`Weekly_Sales` ძლიერ **right-skewed** განაწილებას აჩვენებს: observation-ების უმეტესობა შედარებით მცირეა, თუმცა გვხვდება ძალიან მაღალი გაყიდვების პიკები. ასევე არსებობს მცირე რაოდენობის უარყოფითი მნიშვნელობები, რომლებიც სავარაუდოდ returns/refunds/adjustments-ს უკავშირდება.
+
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/e04dfafe-a53e-4f24-9075-c6f6ff108253" />
+
+### 3. გაყიდვები დროში
+
+საერთო ყოველკვირეულ გაყიდვებში მკაფიოდ ჩანს წლიური სეზონურობა და ნოემბერ–დეკემბრის მაღალი პიკები. ეს ასაბუთებს წლიური lag-ების, seasonal statistical მოდელებისა და trend/seasonality-ზე ორიენტირებული neural architecture-ების გამოყენებას.
+
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/dd4e2b49-8147-4937-8041-89c25837f06e" />
+
+
+### 4. Holiday და non-holiday კვირები
+
+Holiday კვირებში გაყიდვების განაწილება და პიკების მასშტაბი განსხვავებულია. WMAE-ის ხუთმაგი წონის გამო ამ პერიოდების სწორად პროგნოზირება კრიტიკულია.
+
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/e48571ee-97bf-4177-83cc-0516b8710bab" />
+
+
+### 5. Store Type და Store Size
+
+Type A მაღაზიები ჯამურად ყველაზე მაღალ გაყიდვებს ქმნიან. Store Size-სა და total sales-ს შორისაც პოზიტიური კავშირია, თუმცა ეს Store-level ინფორმაციაა, ხოლო target Store–Department დონეზეა, ამიტომ ყველა მოდელში თანაბრად სასარგებლო არ აღმოჩნდა.
+
+<table>
+  <tr>
+    <td>
+      <img width="450"
+           alt="image"
+           src="https://github.com/user-attachments/assets/1c0b8ad8-9311-4661-9897-8959b0424daf" />
+    </td>
+    <td>
+      <img width="450"
+           alt="image"
+           src="https://github.com/user-attachments/assets/54d1410a-d8ae-4e1b-a4c8-516d1d337f2a" />
+    </td>
+  </tr>
+</table>
+
+
+### 6. Department-ების განსხვავება
+
+Department-ებს შორის გაყიდვების მასშტაბი მკვეთრად განსხვავდება. ამიტომ `Dept` უბრალო უწყვეტ რიცხვად არ უნდა აღვიქვათ — tree-based მოდელებში იგი categorical/identifier feature-ად დამუშავდა, ხოლო time-series მოდელებში `(Store, Dept)` წყვილმა `unique_id` შექმნა.
+
+<!-- EDA IMAGE: notebook cell 32 -->
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/c4bfce96-3863-4422-af63-5efeff538c56" />
+
+### 7. წლიური სეზონურობა
+
+წლის კვირების მიხედვით საშუალო გაყიდვები არაერთგვაროვანია და წლის ბოლოს მკვეთრად იზრდება. კვირის ციკლური ბუნების გამოსახატავად შეიქმნა `Week_sin` და `Week_cos`.
+
+<!-- EDA IMAGE: notebook cell 40 -->
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/dfc3fc67-5fa1-4114-a590-5353579c0762" />
+
+
+### 8. Numeric feature-ების კორელაცია
+
+`Temperature`, `Fuel_Price`, `CPI` და `Unemployment` target-თან მხოლოდ სუსტ პირდაპირ კორელაციას აჩვენებს. ეს არ გამორიცხავს არაწრფივ ეფექტებს, მაგრამ EDA-მ წინასწარ მიგვანიშნა, რომ calendar და historical-sales features უფრო ძლიერი signal იქნებოდა.
+
+<!-- EDA IMAGE: notebook cell 44 -->
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/8492535d-b664-4d40-bd82-16d81b5e4bea" />
+
+### 9. დროითი რიგების სიგრძე და უწყვეტობა
+
+Store–Department სერიებს განსხვავებული სიგრძე აქვთ და ყველა მათგანი სრულად უწყვეტი არ არის. ეს განსაკუთრებით მნიშვნელოვანი აღმოჩნდა TFT-ისთვის, რომელსაც ყველა training series-ისთვის სრული future dataframe სჭირდება.
+
+<!-- EDA IMAGE: notebook cell 59 -->
+<img width="800" height="400" alt="image" src="https://github.com/user-attachments/assets/13af4b35-6fea-46f5-b5e6-ae9fc98995a6" />
+
+### EDA-ს მთავარი დასკვნები
+
+- გაყიდვებში ძლიერია **წლიური სეზონურობა** და holiday spikes;
+- მონაცემები შედგება ათასობით განსხვავებული Store–Department სერიისგან;
+- `MarkDown` feature-ები sparse და noisy-ა;
+- Store-level external variables target-ის Department-level granularity-ს სრულად არ ემთხვევა;
+- ისტორიული target, yearly lags და calendar features ყველაზე პერსპექტიული signal-ებია;
+- validation/test პერიოდების სეზონური განსხვავება შედეგების ინტერპრეტაციისას აუცილებლად გასათვალისწინებელია.
+
+> სურათების ჩასასმელად EDA notebook-ის შესაბამისი cell-ის output შეინახეთ მითითებული სახელით `assets/eda/` საქაღალდეში. Markdown ბმულები README-ში უკვე მომზადებულია.
 
 ---
 
-## Preprocessing და Leakage-safe Pipeline
+## საერთო preprocessing pipeline
 
-N-BEATS ექსპერიმენტები ეყრდნობოდა საერთო preprocessing pipeline-ს. Pipeline-ის მიზანი იყო raw Kaggle ფაილებიდან სუფთა, დროით სწორად დალაგებული dataset-ის მიღება.
+პროექტში გამოყენებული მოდელები ერთმანეთისგან მნიშვნელოვნად განსხვავდება, მაგრამ მათი შედეგების შესადარებლად აუცილებელი იყო მონაცემების ერთნაირი საწყისი დამუშავება. ამიტომ შეიქმნა საერთო `preprocessing.py` pipeline, რომელიც raw Kaggle ფაილებს ტვირთავს, აერთიანებს, ასუფთავებს და დროითი მოდელირებისთვის საჭირო სტრუქტურას ქმნის.
 
-იტვირთებოდა ოთხი ძირითადი ფაილი:
+საერთო preprocessing-ის გამოყენებას ორი მთავარი მიზანი ჰქონდა. პირველი იყო ექსპერიმენტების გამეორებადობა: ერთსა და იმავე raw მონაცემზე სხვადასხვა notebook-ს განსხვავებული merge, date conversion ან missing-value logic არ უნდა ჰქონოდა. მეორე იყო leakage-ის კონტროლი: time-series ამოცანაში ერთი შეხედვით უწყინარმა ოპერაციამაც შეიძლება training-ში მომავლის ინფორმაცია შეიტანოს.
 
-- `train.csv.zip`;
-- `test.csv.zip`;
-- `features.csv.zip`;
-- `stores.csv`.
+### Raw მონაცემების ჩატვირთვა და გაერთიანება
 
-შემდეგ `Date` სვეტი გადადიოდა `datetime` ფორმატში, რადგან time-series split, weekly grid და calendar features სწორედ თარიღებზეა დამოკიდებული.
+თავდაპირველად იტვირთება `train`, `test`, `features` და `stores` ფაილები. `Date` სვეტი ყველგან `datetime` ტიპად გარდაიქმნება, რადგან შემდგომი sorting, time split, lag-ების აგება და weekly grid სწორედ თარიღზეა დამოკიდებული.
 
-`train` და `test` მონაცემები ერთიანდებოდა `features.csv` და `stores.csv` ფაილებთან. შედეგად თითოეულ row-ს ემატებოდა external და store-level ინფორმაცია:
+გაყიდვების მონაცემები `features.csv`-ს უერთდება `Store`, `Date` და `IsHoliday` სვეტებით, ხოლო `stores.csv` ემატება `Store` გასაღებით. შედეგად, თითოეულ Store–Department–Week observation-ს ახლავს როგორც target-ის ისტორია, ასევე მაღაზიისა და გარე გარემოს შესახებ ინფორმაცია.
 
-- Temperature;
-- Fuel_Price;
-- MarkDown1–MarkDown5;
-- CPI;
-- Unemployment;
-- IsHoliday;
-- Type;
-- Size.
+### რატომ სრულდება split grid-ის შევსებამდე
 
-### Time-based validation split
+საწყის pipeline-ში სრულ weekly grid-ს ჯერ მთელ dataset-ზე ვქმნიდით და მხოლოდ შემდეგ ვყოფდით train/validation ნაწილებად. ამ მიდგომამ პირდაპირ target leakage არ შექმნა, მაგრამ training მონაცემში შეიძლებოდა ხელოვნურად გამოჩენილიყო Store–Department წყვილი, რომელიც რეალურად მხოლოდ მომავალ validation პერიოდში ჩნდებოდა. მოდელი ამ გზით მომავალი სერიის არსებობის შესახებ ინფორმაციას იღებდა.
 
-Time-series forecasting-ში random split არასწორია, რადგან მომავალის ინფორმაცია არ უნდა მოხვდეს train-ში. ამიტომ validation set შეიქმნა დროით:
-
-- `train_part` — ძველი პერიოდი;
-- `valid_part` — ბოლო 3 თვე.
-
-პირველ preprocessing ვერსიაში `fill_grid()` სრულდებოდა split-მდე:
+საბოლოო leakage-safe თანმიმდევრობაა:
 
 ```text
-merge raw data
-→ fill_grid
-→ time_split
+raw data loading
+→ merge
+→ time-based split
+→ weekly grid-ის შევსება მხოლოდ training ნაწილში
+→ model-specific preprocessing
 ```
 
-ამან შექმნა სუსტი leakage-ის რისკი. პრობლემა ის იყო, რომ თუ რომელიმე Store-Department წყვილი პირველად მხოლოდ validation პერიოდში ჩნდებოდა, `fill_grid()` მას full train range-ის basis-ზე უკვე training grid-შიც ხელოვნურად ჩასვამდა. ეს პირდაპირ target leakage არ იყო, რადგან validation-ის გაყიდვები train-ში არ ხვდებოდა, მაგრამ მოდელი იგებდა future Store-Department pair-ის არსებობას.
+ამ ცვლილებამ განსაკუთრებით მნიშვნელოვანი გახადა ის ფაქტი, რომ საბოლოო შედეგები მხოლოდ corrected pipeline-ზე მიღებული run-ებიდან შევადარეთ.
 
-შემდეგ pipeline შეიცვალა:
+### Weekly grid-ის შევსება
 
-```text
-merge raw data
-→ time_split
-→ fill_grid only on train_part
-```
+Walmart-ის მონაცემებში ყველა Store–Department სერია სრულ 143-კვირიან ისტორიას არ შეიცავს. ზოგიერთ სერიას შუაში ერთი ან რამდენიმე კვირა აკლია. Sequence-based მოდელებისთვის არარეგულარული დროითი ინდექსი პრობლემურია, ამიტომ `fill_grid()` თითოეული training series-ისთვის ყველა პარასკევის თარიღს ქმნის.
 
-ამ ცვლილების შემდეგ training grid იქმნებოდა მხოლოდ იმ Store-Department წყვილებისთვის, რომლებიც რეალურად train პერიოდში არსებობდა. საბოლოო შედეგები ეფუძნება სწორედ ამ **leakage-safe preprocessing** ვერსიას.
+თუ რომელიმე კვირა raw data-ში არ არსებობდა, იქმნება ახალი row, მაგრამ `Weekly_Sales` ავტომატურად 0-ით არ ივსება. ნულით შევსება ნიშნავს მტკიცებას, რომ იმ კვირაში გაყიდვა რეალურად ნული იყო, რაც ყოველთვის სწორი არ არის. ამიტომ target თავდაპირველად `NaN` რჩება და row ინიშნება `was_grid_filled` flag-ით. შემდეგ model-specific preprocessing წყვეტს, როგორ მოექცეს ამ მნიშვნელობას. Neural და statistical მოდელებში საუკეთესო შედეგი ძირითადად linear interpolation-მა აჩვენა.
 
-### `fill_grid()`
+### უარყოფითი გაყიდვები
 
-Walmart-ის მონაცემებში თითოეული Store-Department წყვილი weekly time series-ია. ზოგჯერ რომელიმე კვირა საერთოდ არ გვხვდება raw data-ში. `fill_grid()` ყველა train-period Store-Department წყვილისთვის ქმნის ყველა პარასკევის row-ს.
-
-მაგალითად, თუ გვაქვს:
-
-| Store | Dept | Date | Weekly_Sales |
-|---:|---:|---|---:|
-| 1 | 1 | 2010-02-05 | 20000 |
-| 1 | 1 | 2010-02-12 | 22000 |
-| 1 | 1 | 2010-02-26 | 21000 |
-
-აკლია `2010-02-19`. `fill_grid()` ამატებს ამ row-ს:
-
-| Store | Dept | Date | Weekly_Sales |
-|---:|---:|---|---:|
-| 1 | 1 | 2010-02-05 | 20000 |
-| 1 | 1 | 2010-02-12 | 22000 |
-| 1 | 1 | 2010-02-19 | NaN |
-| 1 | 1 | 2010-02-26 | 21000 |
-
-მნიშვნელოვანია, რომ `fill_grid()` არ ავსებს target-ს 0-ით. ის მხოლოდ ამატებს row-ს და `Weekly_Sales` რჩება `NaN`. N-BEATS-ის model-specific preprocessing-ში შემდეგ გატესტილი იყო missing target values-ის შევსების ორი მეთოდი:
-
-- `zero`;
-- `linear_interpolation`.
-
-საბოლოოდ უკეთ იმუშავა `linear_interpolation`-მა. ეს ნიშნავს, რომ grid-filled missing weeks განვიხილეთ როგორც missing observations და არა აუცილებლად true zero-sales კვირები.
-
-### Negative sales
-
-Raw `Weekly_Sales` ზოგჯერ უარყოფითია. ეს შეიძლება გამოწვეული იყოს returns/refunds/adjustments-ით. preprocessing-ში შეიქმნა:
-
-- `is_negative_sales`;
-- `Weekly_Sales_clipped`.
-
-`Weekly_Sales_clipped` არის:
+მონაცემებში გვხვდება მცირე რაოდენობის უარყოფითი `Weekly_Sales`. ისინი შეიძლება უკავშირდებოდეს დაბრუნებებს, კორექტირებებს ან refund-ებს. იმის ნაცვლად, რომ ავტომატურად წაგვეშალა ასეთი rows, შევინარჩუნეთ ორიგინალური target და დამატებით შევქმენით:
 
 ```text
+is_negative_sales
 Weekly_Sales_clipped = max(Weekly_Sales, 0)
 ```
 
-N-BEATS-ზე გატესტილი იყო როგორც raw `Weekly_Sales`, ასევე `Weekly_Sales_clipped`. საბოლოო საუკეთესო კონფიგურაციაში გამოყენებული იქნა `Weekly_Sales_clipped`, რადგან საუკეთესო არქიტექტურულმა მოდელმა სწორედ ამ target-ით აჩვენა საუკეთესო შედეგი.
+ამან მოგვცა შესაძლებლობა, ექსპერიმენტულად შეგვედარებინა raw და clipped target. უმეტეს მოდელში ორიგინალური `Weekly_Sales` დარჩა, ხოლო საბოლოო N-BEATS არქიტექტურამ საუკეთესო შედეგი clipped target-ზე აჩვენა.
 
----
+### კალენდარული feature engineering
 
-# ექსპერიმენტების სტრატეგია
+გაყიდვებში წლიური სეზონურობისა და holiday ეფექტების გამოსახატავად შეიქმნა `Year`, `Month`, `WeekOfYear`, `Week_sin` და `Week_cos`. სინუსური და კოსინუსური encoding საჭიროა იმისთვის, რომ მოდელმა კვირის ნომერი უბრალო ხაზოვან რიცხვად არ აღიქვას: 52-ე და 1-ლი კვირა კალენდარულად ერთმანეთთან ახლოსაა, თუმცა raw რიცხვებით ერთმანეთისგან შორს ჩანს.
 
-N-BEATS ექსპერიმენტები ჩატარდა ეტაპობრივად. მიზანი იყო არა მხოლოდ საუკეთესო score-ის მიღება, არამედ იმის გაგება, რომელი პარამეტრი რა გავლენას ახდენდა მოდელზე.
+ასევე შეიქმნა ცალკეული holiday flag-ები:
 
-ტესტირება დაიწყო baseline configuration-ით, შემდეგ ცალ-ცალკე შეიცვალა:
+- `is_superbowl`;
+- `is_labor_day`;
+- `is_thanksgiving`;
+- `is_christmas`.
 
-- training steps;
-- learning rate;
-- batch size;
-- scaler;
-- target definition;
-- input window;
-- model capacity;
-- number of blocks;
-- stack architecture;
-- trend/seasonality basis.
+ეს დაყოფა უფრო ინფორმაციულია, ვიდრე მხოლოდ საერთო `IsHoliday`, რადგან სხვადასხვა დღესასწაულს გაყიდვებზე განსხვავებული ეფექტი აქვს.
 
-ყველა მნიშვნელოვანი run დაილოგა MLflow-ში. საბოლოო შედეგების შედარება ეფუძნება leakage-safe preprocessing pipeline-ზე მიღებულ შედეგებს.
+### MarkDown და external feature-ები
 
----
+`MarkDown1–MarkDown5` განსაკუთრებით sparse იყო. Missing value ყოველთვის არ ნიშნავს ნულოვან promotion-ს; ზოგჯერ უბრალოდ ჩანაწერი არ არსებობს. ამიტომ raw მნიშვნელობებთან ერთად დაემატა `MarkDown1_exists`–`MarkDown5_exists` ინდიკატორები.
 
-## 1. საწყისი მოდელი
+`Temperature`, `Fuel_Price`, `CPI` და `Unemployment` preprocessing-ში შევინარჩუნეთ, თუმცა EDA-მ და შემდგომმა ექსპერიმენტებმა აჩვენა, რომ მათი signal target-თან შედარებით სუსტი იყო. განსაკუთრებით TFT-ში ყველა exogenous feature-ის ერთდროულმა დამატებამ შედეგი ვერ გააუმჯობესა.
 
-პირველი N-BEATS მოდელი გაეშვა თითქმის default პარამეტრებით:
+### Model-specific preprocessing
 
-```text
-input_size = 104
-learning_rate = 0.001
-batch_size = 32
-max_steps = 500
-target_transform = none
-```
+საერთო pipeline-ის შემდეგ თითოეული მოდელი მონაცემებს საკუთარი არქიტექტურისთვის ამზადებდა. Tree-based მოდელებისთვის იქმნებოდა categorical encoding, target statistics და lag features. NeuralForecast მოდელებისთვის ფორმატი გადადიოდა `unique_id`, `ds`, `y` სტრუქტურაში. TFT-ს დამატებით სჭირდებოდა future covariates-ის სრული dataframe, ხოლო Prophet/ARIMA/SARIMA თითოეული Store–Department series-ის ცალკე დამუშავებას ახდენდნენ.
 
-`input_size=104` შეირჩა იმიტომ, რომ 104 კვირა დაახლოებით ორ სრულ წლიურ სეზონურ ციკლს მოიცავს. Walmart-ის გაყიდვებში სეზონურობა ძალიან მნიშვნელოვანია, განსაკუთრებით holiday weeks-ის გამო, ამიტომ ერთი წლის ისტორია არასაკმარისი შეიძლება ყოფილიყო.
+## Validation სტრატეგია
 
-საწყისი მოდელი უკვე მნიშვნელოვნად სჯობდა Store-Department median baseline-ს, მაგრამ training steps-ის გაზრდამ შემდგომში აჩვენა, რომ 500 step არასაკმარისი იყო.
+Time-series forecasting-ში random train-test split არასწორი არჩევანია, რადგან training-ში შეიძლება მოხვდეს chronologically გვიანი observation, ხოლო validation-ში — უფრო ძველი. ასეთ შემთხვევაში მოდელი პრაქტიკულად მომავლის ინფორმაციის გამოყენებით წარსულს პროგნოზირებს და მიღებული score რეალურ inference-ს აღარ ასახავს.
 
----
+ამიტომ მონაცემები გავყავით თარიღის მიხედვით. Training ნაწილი მთავრდება 2012 წლის 20 ივლისს, ხოლო მომდევნო 14 კვირა validation პერიოდად რჩება:
 
-## 2. Training Steps
+| ნაწილი | პერიოდი |
+|---|---|
+| Training | 2010-02-05 → 2012-07-20 |
+| Validation | 2012-07-27 → 2012-10-26 |
+| Forecast horizon | 14 კვირა |
 
-`max_steps` განსაზღვრავს რამდენი optimization step შესრულდება training-ის დროს. ძალიან მცირე მნიშვნელობა იწვევს underfitting-ს, რადგან მოდელი ვერ ასწრებს pattern-ების სწავლას. ზედმეტად დიდი მნიშვნელობა შეიძლება overfitting-ს იწვევდეს.
+14-კვირიანი horizon ავირჩიეთ იმიტომ, რომ იგი დაახლოებით ბოლო სამ თვეს მოიცავს და ყველა მოდელისთვის ერთიანი მრავალსაფეხურიანი პროგნოზის შედარების საშუალებას იძლევა. NeuralForecast მოდელებში `h=14` პირდაპირ მოდელის პარამეტრია, ხოლო tree-based და classical მოდელებში იგივე თარიღები შეფასების ფანჯარად გამოიყენება.
 
-გატესტილი იყო:
+Split-ის შემდეგ გამოჩნდა სერიების უწყვეტობის მნიშვნელოვანი პრობლემა. Training-ში იყო **3,321** უნიკალური Store–Department სერია, validation-ში კი **3,104**. მათგან **227** series training-ის შემდეგ აღარ ჩნდებოდა, ხოლო **10** ახალი series პირველად validation პერიოდში გამოჩნდა. გარდა ამისა, validation-ის ყველა სერიას სრული 14 observation არ ჰქონდა; მხოლოდ **2,803** series იყო სრულად წარმოდგენილი.
 
-- 500;
-- 1000;
-- 1500;
-- 2000.
+ეს განსხვავება მოდელებზე სხვადასხვაგვარად მოქმედებდა. N-BEATS და DLinear training-ში ცნობილ series-ებზე ავტომატურად ქმნიდნენ 14-კვირიან forecast-ს, შემდეგ კი შეფასებისას პროგნოზები რეალურად არსებულ validation rows-ს ებმებოდა. TFT-სთვის ეს საკმარისი არ იყო, რადგან future exogenous variables ყველა training series-ისა და მომდევნო 14 კვირის სრულ კომბინაციაზე სჭირდებოდა. ამიტომ TFT-სთვის ცალკე სრული future dataframe ავაგეთ.
 
-ძველ pipeline-ზე 500 → 1000 → 1500 მკაფიოდ აუმჯობესებდა შედეგს. leakage-safe pipeline-ზე საბოლოო საუკეთესო კონფიგურაციებში 2000 step-მა უკეთ იმუშავა. ეს მიუთითებს, რომ სწორად გაწმენდილ training setup-ში მოდელს მეტი optimization step სჭირდებოდა trend/seasonality კომპონენტების უკეთ დასასწავლად.
+### Validation-ის მთავარი შეზღუდვა
 
-საბოლოოდ გამოყენებული იქნა:
+არჩეული validation პერიოდი 2012 წლის ივლისიდან ოქტომბრის ბოლომდე გრძელდება. მასში შეიძლება იყოს Labor Day, მაგრამ არ შედის Thanksgiving და Christmas — კონკურსის ყველაზე რთული და მაღალი წონის პერიოდები. Kaggle test horizon კი სწორედ ნოემბერ–დეკემბრის holiday-heavy კვირებს მოიცავს.
+
+ამიტომ local validation score-ს ორი დანიშნულება აქვს:
+
+1. ერთსა და იმავე split-ზე სხვადასხვა ექსპერიმენტის სამართლიანი შედარება;
+2. preprocessing ან feature engineering ცვლილების გავლენის შეფასება.
+
+მაგრამ local WMAE არ უნდა მივიჩნიოთ Kaggle leaderboard score-ის ზუსტ პროგნოზად. ეს განსხვავება LightGBM-ის შემთხვევაში აშკარად გამოჩნდა:
 
 ```text
-max_steps = 2000
+Local validation WMAE: 1281.58
+Kaggle Private WMAE:   2811.66
 ```
 
----
+Local პერიოდში მოდელი კარგად მუშაობდა, მაგრამ test-ის Thanksgiving/Christmas spikes გაცილებით რთული აღმოჩნდა. საბოლოო დასკვნებისას ამიტომ ვასხვავებთ **საუკეთესო local მოდელს** და **Kaggle-ზე რეალურად შეფასებულ მოდელს**.
 
-## 3. Learning Rate
+## Baseline
 
-`learning_rate` განსაზღვრავს, რამდენად დიდი ნაბიჯით იცვლება მოდელის წონები ყოველ update-ზე.
-
-გატესტილი იყო:
-
-- `0.001`;
-- `0.0005`.
-
-Learning rate-ის შემცირებამ ერთ-ერთი ყველაზე მნიშვნელოვანი გაუმჯობესება მოიტანა. `0.001` ზედმეტად აგრესიული აღმოჩნდა: მოდელი სწავლობდა სწრაფად, მაგრამ უფრო ნაკლებად სტაბილურად. `0.0005`-ზე optimization უფრო რბილი გახდა და validation WMAE შემცირდა.
-
-საბოლოოდ გამოყენებული იქნა:
+ყველა მოდელის შედეგის შესაფასებლად გვჭირდებოდა მარტივი reference, რომელსაც რთული არქიტექტურის გამოყენება არ სჭირდება. ძირითად baseline-ად ავირჩიეთ **Store–Department historical median**: თითოეული სერიის მომავალი გაყიდვა მისი training history-ის მედიანით პროგნოზირდება.
 
 ```text
-learning_rate = 0.0005
+Validation WMAE ≈ 2245.16
 ```
 
----
+Median საშუალოზე უფრო გამძლეა holiday spikes-ისა და outlier-ების მიმართ. თუ კონკრეტული Store–Department series-ის ისტორია არ იყო ხელმისაწვდომი, fallback უფრო ზოგად დონეზე გადადიოდა. Baseline-ის მიზანი არ ყოფილა საუკეთესო პროგნოზის შექმნა; იგი გვიჩვენებდა, რამდენად მეტ ინფორმაციას სწავლობს მოდელი უბრალო ისტორიულ level-თან შედარებით.
 
-## 4. Batch Size
+ყველა საბოლოო მოდელმა, გარდა მარტივი ARIMA-ს ზოგიერთი run-ისა, baseline-ს მნიშვნელოვნად აჯობა. საუკეთესო XGBoost-მა WMAE დაახლოებით 44%-ით შეამცირა, რაც ადასტურებს, რომ yearly seasonality, hierarchical target statistics და nonlinear ურთიერთქმედებები რეალურ დამატებით signal-ს შეიცავდა.
 
-`batch_size` განსაზღვრავს რამდენი training window მუშავდება ერთ gradient update-ზე.
+## LightGBM
 
-გატესტილი იყო:
+### მიდგომა
 
-- `32`;
-- `63/64`.
+LightGBM გამოყენებულია როგორც **global tabular regressor**: თითოეული `(Store, Dept, Date)` ერთი training row-ია, ხოლო ერთი საერთო მოდელი სწავლობს ყველა series-ზე.
 
-Batch size-ის გაზრდამ overall WMAE გააუარესა. დიდი batch იძლევა უფრო სტაბილურ gradient-ს, მაგრამ ხშირად ამცირებს gradient noise-ს, რომელიც ზოგჯერ უკეთეს generalization-ს ეხმარება. ამ dataset-ზე მცირე batch უკეთესი აღმოჩნდა.
+ძირითადი leakage-safe feature-ები:
 
-საბოლოოდ დარჩა:
+- categorical `Store`, `Dept` და მათი კომბინაციები;
+- train-only smoothed target statistics (`RichEncoder`);
+- `lag_52`, `lag_104`;
+- year-over-year ratio;
+- calendar და holiday-distance features.
 
-```text
-batch_size = 32
-```
+### ექსპერიმენტების განვითარება
 
----
+LightGBM-ის ექსპერიმენტები ეტაპობრივად ავაგეთ. საწყის run-ში `Store` და `Dept` ჩვეულებრივ integer feature-ებად შევიტანეთ. შედეგი baseline-ზე უარესი იყო, რადგან ხე დეპარტამენტის ნომრებს რაოდენობრივ მნიშვნელობებად აღიქვამდა — თითქოს Dept 10 Dept 5-ზე „ორჯერ მეტი“ ყოფილიყო. Categorical encoding-მა ეს პრობლემა ნაწილობრივ მოაგვარა და score მკვეთრად გააუმჯობესა.
 
-## 5. Missing Target Strategy
+შემდეგ თითოეული Store–Department სერიის ისტორიული level target encoding-ით გადავეცით. ამ ცვლილებამ მოდელს საშუალება მისცა ერთმანეთისგან გაერჩია დიდი და პატარა დეპარტამენტები. ყველაზე დიდი შემდგომი გაუმჯობესება `lag_52`-მა მოიტანა: გასული წლის იგივე კვირის გაყიდვა Walmart-ის მონაცემებში ერთ-ერთი ყველაზე ძლიერი signal აღმოჩნდა. `lag_104`-მა მოდელს ორი წლის წინანდელი სეზონური reference-იც მისცა.
 
-`fill_grid()`-ის შემდეგ ზოგიერთი row ხელოვნურად არის დამატებული და target არის missing. ამ row-ებისთვის გატესტილი იყო:
+RichEncoder-ის ეტაპზე უბრალო საშუალოს ნაცვლად რამდენიმე იერარქიული train-only statistic გამოვიყენეთ. ამან sparse series-ებში ზედმეტი noise შეამცირა. მოგვიანებით დავამატეთ L1 objective და capacity/regularization tuning. საბოლოო 2,000-tree configuration ნელა სწავლობდა, მაგრამ რთული ურთიერთქმედებების დასაჭერად საკმარისი capacity ჰქონდა.
 
-- zero filling;
-- linear interpolation.
+ექსპერიმენტებისას განსაკუთრებით მნიშვნელოვანი იყო RecentLags run. თავდაპირველად მან 1184.60 WMAE აჩვენა, თუმცა შემოწმებით აღმოჩნდა, რომ validation observation-ებისთვის `lag_1`, `lag_2` და `lag_4` რეალურ validation target-ს კითხულობდა. Honest recursive ვერსიაში score 1366.55-მდე გაუარესდა. ამიტომ leaked run საბოლოო შედარებიდან სრულად ამოვიღეთ.
 
-Zero filling გულისხმობს, რომ missing week განვიხილოთ როგორც 0 გაყიდვა. Linear interpolation missing value-ს ავსებს იმავე Store-Department სერიის მეზობელი წერტილების მიხედვით.
+### ძირითადი ექსპერიმენტები
 
-Linear interpolation-მა უკეთ იმუშავა. ეს მიუთითებს, რომ grid-filled missing weeks უფრო ხშირად ჰგავდა missing observations-ს და არა აუცილებლად real zero-sales week-ს. N-BEATS როგორც univariate sequence model ძალიან მგრძნობიარეა target sequence-ის ფორმაზე, ამიტომ ხელოვნურმა ნულებმა შეიძლება ზედმეტი sharp drops შეიტანოს სერიაში. Interpolation უფრო გლუვ და რეალისტურ sequence-ს ქმნიდა.
+| ექსპერიმენტი | Validation WMAE | შეფასება |
+|---|---:|---|
+| Raw numeric identifiers | 4197.61 | Store/Dept-ის რიცხვად აღქმა არასწორია |
+| Categorical encoding | 2261.94 | მკვეთრი გაუმჯობესება |
+| Target Encoding | 1835.45 | series-level signal დაემატა |
+| + `lag_52` | 1552.86 | წლიური სეზონურობა ძლიერი feature-ია |
+| + `lag_104` | 1491.87 | დამატებითი გაუმჯობესება |
+| RichEncoder + YoY + Calendar | 1351.65 | ძლიერი clean baseline |
+| Recent lags, leaked | 1184.60 | უარყოფილია — future actuals გამოიყენებოდა |
+| Recent lags, honest recursive | 1366.55 | leakage-ის გარეშე გაუმჯობესება გაქრა |
+| L1 objective | 1340.29 | WMAE-სთან უკეთესი შესაბამისობა |
+| 127 leaves, unregularized | 1310.64 | კარგი score, მაგრამ დიდი overfit gap |
+| + regularization | 1305.59 | gap მკვეთრად შემცირდა |
+| **2000 trees, lr=0.03** | **1281.58** | **საუკეთესო სანდო LightGBM** |
 
-საბოლოოდ გამოყენებული იქნა:
-
-```text
-missing_target_strategy = linear_interpolation
-```
-
----
-
-## 6. Scaler
-
-NeuralForecast იძლევა scaler-ის არჩევის საშუალებას. გატესტილი იყო:
-
-- identity;
-- robust.
-
-`identity` ნიშნავს, რომ დამატებითი scaling არ გამოიყენება. `robust` ცდილობს extreme values-ის გავლენის შემცირებას.
-
-Robust scaler-მა გააუარესა შედეგი, განსაკუთრებით holiday weeks-ზე. Walmart data-ში holiday weeks ხშირად არის სწორედ ის პერიოდები, სადაც გაყიდვები მკვეთრად იზრდება. Robust scaling ამ მაღალი მნიშვნელობების გავლენას ამცირებს და მოდელს შეიძლება გაუჭირდეს holiday spikes-ის სწორად სწავლა.
-
-საბოლოოდ გამოყენებული იქნა:
-
-```text
-scaler_type = identity
-```
-
----
-
-## 7. Target Column
-
-გატესტილი იყო ორი target:
-
-- `Weekly_Sales`;
-- `Weekly_Sales_clipped`.
-
-Raw `Weekly_Sales` ზოგიერთ default-architecture run-ში ძალიან მცირედით უკეთესი იყო, მაგრამ სხვაობა დაახლოებით 1 WMAE-ის ფარგლებში იყო. საბოლოო საუკეთესო არქიტექტურულ configuration-ში საუკეთესო შედეგი მივიღეთ `Weekly_Sales_clipped` target-ით.
-
-`Weekly_Sales_clipped` ასევე უფრო კონსერვატიულია, რადგან უარყოფით გაყიდვებს 0-მდე ჭრის და forecast-ის ამოცანაში უარყოფითი გაყიდვების სწავლა ნაკლებად სასურველია.
-
-საბოლოოდ საუკეთესო მოდელში გამოყენებული იქნა:
-
-```text
-target_col = Weekly_Sales_clipped
-```
-
----
-
-## 8. Input Window
-
-`input_size` განსაზღვრავს, რამდენი წარსული კვირა მიეწოდება მოდელს პროგნოზის გასაკეთებლად.
-
-გატესტილი იყო:
-
-- 104;
-- 112.
-
-104 კვირა მოიცავს დაახლოებით ორ წლიურ სეზონურ ციკლს. 112 კვირამ validation WMAE გააუარესა. დამატებითი ისტორია უკვე აღარ მატებდა ბევრ ახალ სეზონურ ინფორმაციას, მაგრამ ზრდიდა sequence-ის სირთულეს და noise-ს.
-
-საბოლოოდ დარჩა:
-
-```text
-input_size = 104
-```
-
----
-
-## 9. Fully Connected Layer-ების ზომა
-
-N-BEATS-ის block-ები აგებულია MLP layer-ებით. თავდაპირველად გამოიყენებოდა default:
-
-```text
-[[512,512],
- [512,512],
- [512,512]]
-```
-
-შემდეგ შემოწმდა უფრო დიდი layer-ები:
-
-```text
-[[1024,1024],
- [1024,1024]]
-```
-
-და საბოლოო არქიტექტურულ ექსპერიმენტში:
-
-```text
-[[1024,1024],
- [1024,1024],
- [1024,1024]]
-```
-
-მხოლოდ MLP-ის ზომის ზრდა default architecture-ზე არ იყო საკმარისი და ზოგიერთ run-ში შედეგს აუარესებდა. თუმცა Trend + Seasonality architecture-თან ერთად 1024-იანი MLP layers-მა საუკეთესო შედეგი მოგვცა. ეს აჩვენებს, რომ capacity-ის გაზრდა თავისთავად არ არის საკმარისი; ის ეფექტური გახდა მხოლოდ მაშინ, როცა model structure უკეთ მოერგო გაყიდვების trend/seasonality ბუნებას.
-
----
-
-## 10. Block-ების რაოდენობა
-
-გატესტილი იყო:
-
-```text
-n_blocks = [2,2,2]
-```
-
-default-ის ნაცვლად:
-
-```text
-n_blocks = [1,1,1]
-```
-
-Block-ების რაოდენობის გაზრდამ validation WMAE გააუარესა. ეს ნიშნავს, რომ მეტი residual decomposition ამ მონაცემისთვის ზედმეტი აღმოჩნდა. დამატებითმა block-ებმა გაზარდა მოდელის სირთულე, მაგრამ არ გააუმჯობესა generalization.
-
----
-
-## 11. Trend / Seasonality Architecture
-
-ბოლო ეტაპზე დეტალურად შემოწმდა N-BEATS-ის შიდა არქიტექტურა. შეიცვალა:
-
-- Stack Types;
-- Trend Polynomial Degree;
-- Harmonic Basis;
-- Seasonality Stack-ის სიღრმე;
-- Fully Connected Layer-ების ზომა.
-
-Architecture sweep-ის შედეგები:
-
-| Architecture | Validation WMAE | Holiday WMAE | Non-Holiday WMAE |
-|---|---:|---:|---:|
-| Trend + Seasonality | 1289.64 | 1402.17 | 1246.29 |
-| Trend + Seasonality + Harmonics = 5 | 1276.95 | 1385.33 | 1235.21 |
-| Trend Degree = 3 | **1276.74** | 1398.02 | 1230.02 |
-| Deeper Seasonality | 1286.70 | 1356.11 | 1259.96 |
-| Identity + Trend + Seasonality | 1294.83 | 1447.48 | 1236.02 |
-
-თავდაპირველად გამოყენებული იყო default `Identity + Trend + Seasonality` არქიტექტურა. Sweep-მა აჩვენა, რომ Walmart-ის მონაცემებისთვის უკეთესი აღმოჩნდა უფრო ფოკუსირებული `Trend + Seasonality` სტრუქტურა.
-
-საუკეთესო შედეგი მიღებული იქნა შემდეგი კონფიგურაციით:
-
-```text
-Stack Types       = Trend + Seasonality
-Blocks            = [1,1]
-Polynomial Degree = 3
-Harmonics         = 3
-MLP Units         = [[1024,1024],
-                     [1024,1024],
-                     [1024,1024]]
-```
-
-Trend Stack-ის polynomial degree-ის გაზრდამ მოდელს მისცა საშუალება უფრო მოქნილი გრძელვადიანი trend ესწავლა. Harmonic basis-ის გამოყენებამ seasonality component უფრო მდიდარი გახადა. Fully Connected layer-ების გაფართოებამ კი გაზარდა model capacity, მაგრამ უკვე სწორად შერჩეულ trend/seasonality structure-ში.
-
-ერთ მომენტში იგივე არქიტექტურის დამოუკიდებელ run-ზე შედეგი გაუარესდა. შემოწმების შემდეგ აღმოჩნდა, რომ run ზუსტად იგივე configuration-ით არ იყო გაშვებული: `mlp_units` განსხვავებული იყო. სწორი configuration-ის ხელახლა გაშვებისას იგივე საუკეთესო შედეგი განმეორდა:
-
-```text
-Validation WMAE = 1276.74
-```
-
-ამიტომ საბოლოოდ დადგინდა, რომ გაუმჯობესება შემთხვევითი არ ყოფილა. საუკეთესო შედეგი მოგვცა არა default architecture-მა, არამედ trend/seasonality-ზე მორგებულმა architecture-მა.
-
----
-
-# Leakage-safe შედეგები და Baseline
-
-საბოლოო შეფასება ეფუძნება leakage-safe preprocessing pipeline-ს.
-
-Baseline იყო Store-Department median baseline:
-
-```text
-Baseline WMAE = 2244.99
-```
-
-საუკეთესო N-BEATS შედეგი:
-
-```text
-Validation WMAE = 1276.74
-```
-
-გაუმჯობესება:
-
-```text
-Improvement = 968.25 WMAE
-Improvement % = 43.13%
-```
-
----
-
-# ექსპერიმენტების შეჯამება
-
-| ექსპერიმენტი | ცვლილება | შედეგი | ინტერპრეტაცია |
-|---|---|---:|---|
-| Baseline | Store-Dept Median | 2244.99 | Reference |
-| Learning Rate | 0.001 → 0.0005 | გაუმჯობესდა | უფრო სტაბილური optimization |
-| Training Steps | 500 → 2000 | გაუმჯობესდა | მოდელს მეტი დრო დასჭირდა pattern-ების სასწავლად |
-| Batch Size | 32 → 63/64 | გაუარესდა | მცირე batch უკეთ გენერალიზდებოდა |
-| Missing Target | Zero → Linear Interpolation | გაუმჯობესდა | ხელოვნური ნულების ნაცვლად smoother sequence |
-| Scaler | Identity → Robust | გაუარესდა | holiday spikes-ის გავლენა შემცირდა |
-| Target | Weekly_Sales vs clipped | მსგავსი | clipped საბოლოო არქიტექტურაზე საუკეთესო |
-| Input Window | 104 → 112 | გაუარესდა | დამატებითმა ისტორიამ noise გაზარდა |
-| Blocks | [1,1,1] → [2,2,2] | გაუარესდა | ზედმეტი model complexity |
-| MLP Size | 512 → 1024 | mixed | მხოლოდ trend/seasonality architecture-ში იმუშავა |
-| Architecture | Default → Trend + Seasonality | **საუკეთესო** | მონაცემების trend/seasonality ბუნებას უკეთ მოერგო |
-
----
-
-# საბოლოოდ არჩეული მოდელი
+### საბოლოო კონფიგურაცია
 
 | პარამეტრი | მნიშვნელობა |
 |---|---|
-| Model | N-BEATS |
-| Model Type | Global Univariate |
-| Forecast Horizon | 14 კვირა |
-| Input Window | 104 კვირა |
-| Learning Rate | 0.0005 |
-| Batch Size | 32 |
-| Training Steps | 2000 |
+| Objective | `regression_l1` |
+| `num_leaves` | 127 |
+| `n_estimators` | 2000 |
+| `learning_rate` | 0.03 |
+| `min_child_samples` | 200 |
+| `reg_lambda` | 10.0 |
+| `subsample` / `colsample_bytree` | 0.8 / 0.8 |
+| Validation WMAE | **1281.58** |
+
+### Kaggle შედეგი
+
+| Split | WMAE |
+|---|---:|
+| Public leaderboard | 2642.07 |
+| Private leaderboard | **2811.66** |
+
+Local და Kaggle შედეგებს შორის სხვაობის მთავარი მიზეზია validation/test სეზონური mismatch და holiday-heavy test horizon.
+
+---
+
+## XGBoost
+
+### მიდგომა
+
+XGBoost-შიც გამოყენებულია global tabular forecasting. საბოლოო ექსპერიმენტებში LightGBM-ის leakage-safe feature recipe გადავიტანეთ XGBoost-ზე: RichEncoder, yearly lags, YoY ratio, calendar extras, L1 objective და ძლიერი regularization.
+
+### ექსპერიმენტების განვითარება
+
+XGBoost-ის საწყისი ვერსიაც იმავე პრობლემას წააწყდა, რასაც LightGBM: raw integer identifiers სერიების ნამდვილ იდენტობას ვერ წარმოადგენდა. Categorical და target encoding-ის დამატებამ შედეგი გააუმჯობესა, ხოლო `lag_52` კვლავ ყველაზე მნიშვნელოვანი temporal feature აღმოჩნდა.
+
+პირველი ხელით მორგებული XGBoost configuration 1409 WMAE-მდე მივიდა, მაგრამ LightGBM-ის საბოლოო recipe-სგან ჯერ კიდევ განსხვავდებოდა. ამიტომ ჩავატარეთ სუფთა A/B port: იგივე RichEncoder, `lag_52`, `lag_104`, YoY ratio, calendar features და L1 objective XGBoost-ზე გადავიტანეთ. ამ ცვლილებამ score 1254.85-მდე შეამცირა და პროექტის საუკეთესო local შედეგი მოგვცა.
+
+ასევე შევინარჩუნეთ უფრო მკაცრად regularized run. მისი WMAE 1261.95 იყო — დაახლოებით 7 ერთეულით უარესი — მაგრამ generalization gap 104-დან 55-მდე შემცირდა. ეს აჩვენებს, რომ მხოლოდ საუკეთესო score-ის არჩევა ყოველთვის საკმარისი არ არის; production ან უცნობ test distribution-ზე უფრო კონსერვატიული configuration შეიძლება უსაფრთხო იყოს.
+
+### ძირითადი ექსპერიმენტები
+
+| ექსპერიმენტი | Validation WMAE | შეფასება |
+|---|---:|---|
+| Raw numeric identifiers | 3199.45 | სუსტი baseline |
+| Categorical encoding | 1949.40 | მნიშვნელოვანი გაუმჯობესება |
+| Target Encoding | 1748.03 | series-level ისტორია დაემატა |
+| + `lag_52` | 1476.88 | ყველაზე ძლიერი საწყისი გაუმჯობესება |
+| + `lag_104` | 1461.29 | მცირე დამატებითი სარგებელი |
+| Hand-tuned old feature set | 1409.00 | ძველი საუკეთესო |
+| **L1 + regularization** | **1254.85** | **საუკეთესო local score** |
+| Tight regularization | 1261.95 | ოდნავ უარესი score, ნაკლები gap |
+
+Short lags და current-date target aggregates უარყოფილია, რადგან ისინი ან leakage-ს ქმნიდნენ, ან future block-ზე deployable არ იყო.
+
+### საუკეთესო კონფიგურაციები
+
+| პარამეტრი | Best-score run | Tight run |
+|---|---:|---:|
+| Objective | `reg:absoluteerror` | `reg:absoluteerror` |
+| `max_depth` | 8 | 8 |
+| `n_estimators` | 2000 | 2000 |
+| `learning_rate` | 0.03 | 0.03 |
+| `min_child_weight` | 20 | 50 |
+| `reg_lambda` | 10 | 20 |
+| `gamma` | 0.1 | 0.5 |
+| Validation WMAE | **1254.85** | **1261.95** |
+| Generalization gap | 104 | 55 |
+
+**1254.85** არის პროექტის საუკეთესო local validation შედეგი. Tight configuration ოდნავ უფრო კონსერვატიულია, თუმცა Kaggle submission ამ მოდელისთვის არ გაკეთებულა.
+
+---
+
+## N-BEATS
+
+### მიდგომა
+
+N-BEATS არის MLP ბლოკებზე დაფუძნებული deep forecasting architecture. თითოეული block ქმნის:
+
+- `backcast`-ს — input history-ის ახსნას;
+- `forecast`-ს — მომავალი პერიოდის პროგნოზს.
+
+მოდელი გამოყენებულია **global univariate** რეჟიმში: ერთი საერთო neural network სწავლობს ყველა Store–Department series-ზე, მაგრამ input-ში იღებს მხოლოდ `unique_id`, `ds` და historical `y`-ს.
+
+### ექსპერიმენტების განვითარება
+
+N-BEATS-ის პირველი მიზანი იყო შეგვემოწმებინა, რამდენად ძლიერი შეიძლება იყოს pure univariate forecasting — ანუ მხოლოდ გაყიდვების ისტორიაზე დაფუძნებული მოდელი, ყოველგვარი Temperature, CPI, MarkDown ან Store Size feature-ის გარეშე. მიუხედავად feature-ების სიმცირისა, მოდელმა tree-based შედეგებთან ძალიან ახლოს მისვლა შეძლო.
+
+საწყის architecture-ში Identity, Trend და Seasonality stacks გამოიყენებოდა. Training steps-ის გაზრდამ და learning rate-ის შემცირებამ optimization უფრო სტაბილური გახადა. Missing კვირების ნულით შევსებამ sequence-ში ხელოვნური ვარდნები შექმნა, ამიტომ linear interpolation უკეთესი აღმოჩნდა. Robust scaling-მა კი holiday spikes-ის გავლენა შეამცირა და შედეგი გააუარესა.
+
+ყველაზე საინტერესო ცვლილება architecture sweep იყო. Identity stack-ის ამოღებამ და მოდელის Trend + Seasonality კომპონენტებზე ფოკუსირებამ შედეგი გააუმჯობესა. Polynomial degree 3-მა trend-ს მეტი მოქნილობა მისცა, harmonic basis-მა კი recurring seasonal pattern-ების სწავლა გააძლიერა. საბოლოო 1276.74 WMAE მიუთითებს, რომ Walmart-ის გაყიდვებში ისტორიული sequence თავისთავად ძალიან ინფორმაციულია.
+
+### ექსპერიმენტები
+
+| ცვლილება | საუკეთესო დაკვირვება |
+|---|---|
+| Training steps: 500 → 2000 | უფრო ხანგრძლივმა training-მა შედეგი გააუმჯობესა |
+| Learning rate: 0.001 → 0.0005 | optimization უფრო სტაბილური გახდა |
+| Batch size: 32 → 64 | შედეგი გაუარესდა |
+| Missing target: zero → interpolation | interpolation უკეთესი აღმოჩნდა |
+| Scaler: identity → robust | robust-მა holiday spikes დაასუსტა |
+| Input size: 104 → 112 | დამატებითმა ისტორიამ შედეგი ვერ გააუმჯობესა |
+| მეტი blocks | ზედმეტი complexity და უარესი generalization |
+| Default → Trend + Seasonality stacks | მნიშვნელოვანი გაუმჯობესება |
+
+Architecture sweep:
+
+| არქიტექტურა | Validation WMAE |
+|---|---:|
+| Identity + Trend + Seasonality | 1294.83 |
+| Trend + Seasonality | 1289.64 |
+| Trend + Seasonality, harmonics=5 | 1276.95 |
+| **Trend degree=3** | **1276.74** |
+| Deeper seasonality | 1286.70 |
+
+### საუკეთესო კონფიგურაცია
+
+| პარამეტრი | მნიშვნელობა |
+|---|---|
+| Model type | Global univariate |
+| Horizon | 14 |
+| Input size | 104 |
+| Learning rate | 0.0005 |
+| Batch size | 32 |
+| Max steps | 2000 |
 | Loss | MAE |
-| Target | Weekly_Sales_clipped |
-| Missing Target Strategy | Linear Interpolation |
+| Target | `Weekly_Sales_clipped` |
+| Missing target | Linear interpolation |
 | Scaler | Identity |
-| Stack Types | Trend + Seasonality |
-| Blocks | [1,1] |
-| Polynomial Degree | 3 |
+| Stacks | Trend + Seasonality |
+| Blocks | `[1, 1]` |
+| Polynomial degree | 3 |
 | Harmonics | 3 |
-| MLP Units | [[1024,1024],[1024,1024],[1024,1024]] |
+| MLP units | 1024 × 1024 |
 | Validation WMAE | **1276.74** |
-| Baseline WMAE | **2244.99** |
-| Improvement | **43.13%** |
+| Improvement over baseline | **43.13%** |
+
+N-BEATS გახდა **საუკეთესო Deep Learning მოდელი** და overall ranking-ში მეორე ადგილი დაიკავა.
 
 ---
-
-# Overfitting / Generalization Analysis
-
-საუკეთესო run-ზე train-tail WMAE იყო:
-
-```text
-train_tail_wmae = 1806.29
-```
-
-ხოლო validation WMAE:
-
-```text
-valid_wmae = 1276.74
-```
-
-Generalization gap ითვლებოდა ასე:
-
-```text
-valid_wmae - train_tail_wmae = -529.55
-```
-
-ეს კლასიკურ overfitting-ს არ აჩვენებს, რადგან validation error train-tail error-ზე უარესი არ არის. პირიქით, validation period უფრო მარტივი აღმოჩნდა, ან train-tail split შეიცავდა უფრო რთულ Store-Department-week შემთხვევებს.
-
-ამიტომ overfitting-ის მტკიცებულება ამ შედეგებში არ ჩანს. თუმცა ეს არ ნიშნავს, რომ მოდელი იდეალურად generalizes ყველა პერიოდში. უფრო სწორი ინტერპრეტაციაა, რომ train-tail და validation periods სირთულით განსხვავდებოდა.
-
----
-
-# დასკვნა
-
-N-BEATS-მა მნიშვნელოვნად აჯობა Store-Department median baseline-ს და აჩვენა, რომ მხოლოდ historical sales sequence-ზეც შესაძლებელია ძლიერი პროგნოზის აგება.
-
-ყველაზე დიდი გავლენა შედეგზე ჰქონდა:
-
-- learning rate-ის შემცირებას;
-- training steps-ის გაზრდას;
-- missing target values-ის linear interpolation-ით შევსებას;
-- N-BEATS-ის architecture-ის trend/seasonality-ზე მორგებას.
-
-მეორეს მხრივ, შედეგი გააუარესა:
-
-- batch size-ის გაზრდამ;
-- robust scaler-ის გამოყენებამ;
-- input window-ის 112-მდე გაზრდამ;
-- block-ების რაოდენობის ზრდამ;
-- არასწორ architecture/capacity კომბინაციებმა.
-
-საბოლოო შედეგი აჩვენებს, რომ N-BEATS-ისთვის მხოლოდ ჰიპერპარამეტრების tuning არ იყო საკმარისი. საუკეთესო შედეგი მივიღეთ მაშინ, როცა მოდელის შიდა არქიტექტურა უკეთ მოვარგეთ Walmart sales-ის ბუნებას — ანუ trend-სა და seasonality-ს.
-
-
-
 
 ## DLinear
 
-### მოდელის მიმოხილვა
+### მიდგომა
 
-DLinear (Decomposition Linear Model) წარმოადგენს მარტივ, მაგრამ ეფექტურ Deep Learning არქიტექტურას, რომელიც სპეციალურად დროითი რიგების პროგნოზირებისთვის შეიქმნა. მოდელი პირველად წარმოდგენილი იყო LTSF-Linear (Long-Term Series Forecasting with Linear Models) კვლევაში, სადაც ავტორებმა აჩვენეს, რომ გარკვეულ ამოცანებზე მარტივი Linear მოდელები კონკურენციას უწევდნენ გაცილებით რთულ Transformer არქიტექტურებს.
+DLinear დროით რიგს moving average-ის საშუალებით ყოფს **trend** და **seasonal/residual** კომპონენტებად და ორივესთვის ცალკე linear projection-ს სწავლობს. არქიტექტურა N-BEATS-სა და TFT-ზე გაცილებით მარტივი და სწრაფია.
 
-DLinear-ის მთავარი იდეა არის დროითი რიგის **Trend** და **Seasonality** კომპონენტებად გაყოფა (Series Decomposition). ამისათვის გამოიყენება მოძრავი საშუალო (Moving Average), რის შემდეგაც თითოეულ კომპონენტზე დამოუკიდებლად ისწავლება Linear Transformation. საბოლოო პროგნოზი მიიღება ამ ორი კომპონენტის ჯამით.
+### ექსპერიმენტების განვითარება
 
-N-BEATS-ისგან განსხვავებით, DLinear არ იყენებს ღრმა Fully Connected ბლოკებს, Residual Connections-ს ან რთულ არაწრფივ ტრანსფორმაციებს. მისი არქიტექტურა მნიშვნელოვნად მარტივია, რის გამოც ტრენინგი სწრაფია, ხოლო ჰიპერპარამეტრების რაოდენობა შედარებით მცირეა.
+DLinear-ის ექსპერიმენტებში მთავარი კითხვა იყო, რამდენად შორს შეიძლება წავიდეს ძალიან მარტივი decomposition-based architecture. მოდელი moving average-ით გამოყოფს trend-ს და residual/seasonal კომპონენტს, შემდეგ ორივეზე ხაზოვან projection-ს სწავლობს. ამიტომ მისთვის ყველაზე მნიშვნელოვანი ჰიპერპარამეტრი moving-average window აღმოჩნდა.
 
-ამ პროექტში გამოყენებულია **NeuralForecast** ბიბლიოთეკის DLinear იმპლემენტაცია.
+52-კვირიანი input window მხოლოდ ერთ წლიურ ციკლს მოიცავდა და აშკარად არასაკმარისი იყო. 104 და 112 კვირაზე მოდელმა ორი სეზონური ციკლის ნახვა შეძლო; საუკეთესო შედეგი 112 კვირაზე მივიღეთ. Moving average 13-მა trend-ისა და მოკლევადიანი variation-ის საუკეთესო ბალანსი შექმნა. ძალიან დიდი window, მაგალითად 51, რიგს ზედმეტად აგლუვებდა და მნიშვნელოვანი ცვლილებები იკარგებოდა.
 
----
+DLinear-მა N-BEATS-ს ვერ აჯობა, თუმცა 1340.99 WMAE ასეთი მარტივი architecture-ისთვის ძლიერი შედეგია. იგი განსაკუთრებით საინტერესოა მაშინ, როდესაც training speed, ინტერპრეტაცია და დაბალი computational cost მნიშვნელოვანია.
 
-## ექსპერიმენტების მიზანი
+### ძირითადი ექსპერიმენტები
 
-DLinear მოდელის ექსპერიმენტების მთავარი მიზანი იყო ისეთი ჰიპერპარამეტრების მოძებნა, რომლებიც Walmart-ის გაყიდვების მონაცემებზე საუკეთესო პროგნოზს უზრუნველყოფდა.
+| პარამეტრი | შემოწმებული მნიშვნელობები | საუკეთესო |
+|---|---|---:|
+| Input size | 52, 104, 112 | **112** |
+| Moving average | 7, 13, 21, 25, 51 | **13** |
+| Learning rate | 0.0005, 0.001 | **0.001** |
+| Batch size | 32, 64, 128, 256 | **128** |
+| Max steps | 1500, 2000, 2500, 3000 | **2500** |
+| Scaler | Identity, Robust | **Robust** |
+| Target | clipped, raw | **Weekly_Sales** |
 
-ყველა ექსპერიმენტში გამოყენებული იყო ერთი და იგივე:
+### საუკეთესო კონფიგურაცია და შედეგი
 
-- Loss Function: **MAE**
-- Forecast Horizon: **14 კვირა**
-- Validation Split: **ბოლო 3 თვე**
-- Evaluation Metric: **Weighted Mean Absolute Error (WMAE)**
-- Optimizer: NeuralForecast Default (Adam)
-- Random Seed: **42**
-
-ყველა ექსპერიმენტი დალოგილია **MLflow**-ში.
-
----
-
-## ჩატარებული ექსპერიმენტები
-
-### 1. Input Window (`input_size`)
-
-პირველი ექსპერიმენტები ჩატარდა სხვადასხვა ისტორიული ფანჯრის გამოყენებით.
-
-| Input Size | Validation WMAE |
-|-----------:|---------------:|
-| 52 | 1544.70 |
-| 104 | 1350.43 |
-| **112** | **1340.99** ✅ |
-
-**დასკვნა**
-
-52 კვირის ისტორია არასაკმარისი აღმოჩნდა. ისტორიის გაზრდამ მნიშვნელოვნად გააუმჯობესა პროგნოზის ხარისხი, ხოლო საუკეთესო შედეგი მიიღო **112 კვირიანმა Input Window-მ**.
-
----
-
-### 2. Moving Average Window
-
-DLinear-ის ყველაზე მნიშვნელოვანი მოდელური პარამეტრია **Moving Average Window**, რომელიც გამოიყენება Trend და Seasonality კომპონენტების გასაყოფად.
-
-შემოწმებული იქნა რამდენიმე მნიშვნელობა.
-
-| Moving Average Window | Validation WMAE |
-|----------------------:|---------------:|
-| 7 | 1343.15 |
-| **13** | **1340.99** ✅ |
-| 21 | 1342.31 |
-| 25 | 1343.86 |
-| 51 | 1553.29 |
-
-**დასკვნა**
-
-ძალიან დიდი Moving Average Window ზედმეტად აგლუვებდა დროით რიგს და აუარესებდა შედეგებს, ხოლო ძალიან პატარა მნიშვნელობაც ოპტიმალური არ აღმოჩნდა. საუკეთესო შედეგი მიიღო **13 კვირიანმა Moving Average Window-მ**, რომელმაც საუკეთესო ბალანსი უზრუნველყო Trend-ისა და Seasonality-ის გამოყოფაში.
-
----
-
-### 3. Learning Rate
-
-Learning Rate-ის გავლენის შესაფასებლად გამოყენებული იქნა რამდენიმე მნიშვნელობა.
-
-| Learning Rate | Validation WMAE |
-|--------------:|---------------:|
-| 0.0005 | 1379.70 |
-| **0.001** | **1340.99** ✅ |
-
-**დასკვნა**
-
-Learning Rate-ის გაზრდამ მნიშვნელოვნად დააჩქარა მოდელის კონვერგენცია და საბოლოო შედეგიც გააუმჯობესა.
-
----
-
-### 4. Batch Size
-
-შემოწმდა სხვადასხვა Batch Size.
-
-| Batch Size | Validation WMAE |
-|-----------:|---------------:|
-| 32 | 1553.48 |
-| 64 | 1405.42 |
-| **128** | **1340.99** ✅ |
-| 256 | 1380.49 |
-
-**დასკვნა**
-
-Batch Size-ის ზრდა 32-დან 128-მდე თანდათან აუმჯობესებდა შედეგებს. 256-ზე გადასვლისას გაუმჯობესება აღარ გაგრძელდა, რის გამოც საუკეთესო მნიშვნელობად შეირჩა **128**.
-
----
-
-### 5. Training Steps
-
-შემოწმდა ტრენინგის ხანგრძლივობაც.
-
-| Max Steps | Validation WMAE |
-|----------:|---------------:|
-| 1500 | 1553.48 |
-| 2000 | 1464.15 |
-| **2500** | **1340.99** ✅ |
-| 3000 | 1413.35 |
-
-**დასკვნა**
-
-2500 ნაბიჯამდე ტრენინგის გაგრძელება მნიშვნელოვნად აუმჯობესებდა მოდელის ხარისხს, თუმცა 3000 ნაბიჯზე დამატებითი გაუმჯობესება აღარ დაფიქსირდა.
-
----
-
-### 6. Feature Scaling
-
-ასევე შედარდა სხვადასხვა Scaling Strategy.
-
-| Scaler | Validation WMAE |
-|--------|---------------:|
-| Identity | 1350.43 |
-| **Robust** | **1340.99** ✅ |
-
-**დასკვნა**
-
-Robust Scaler-მა ოდნავ უკეთესი შედეგი აჩვენა, განსაკუთრებით სხვადასხვა Store/Department სერიების განსხვავებული მასშტაბების პირობებში.
-
----
-
-### 7. Target Variable
-
-დატესტილი იყო ორი განსხვავებული Target.
-
-| Target | Validation WMAE |
-|--------|---------------:|
-| Weekly_Sales_Clipped | 1350.55 |
-| **Weekly_Sales** | **1350.43** |
-
-**დასკვნა**
-
-უარყოფითი გაყიდვების Clipping-მა პრაქტიკულად არ შეცვალა შედეგი. საბოლოოდ არჩეული იქნა **ორიგინალური Weekly_Sales**, რადგან იგი სრულად შეესაბამება Kaggle-ის შეფასების მეტრიკას.
-
----
-
-## საუკეთესო კონფიგურაცია
-
-| Parameter | Value |
-|-----------|------|
-| Model | DLinear |
-| Target | Weekly_Sales |
-| Evaluation Target | Weekly_Sales |
-| Input Size | **112** |
+| პარამეტრი | მნიშვნელობა |
+|---|---|
+| Input size | 112 |
 | Horizon | 14 |
-| Learning Rate | **0.001** |
-| Batch Size | **128** |
-| Max Steps | **2500** |
-| Moving Average Window | **13** |
-| Scaler | **Robust** |
+| Moving average window | 13 |
+| Learning rate | 0.001 |
+| Batch size | 128 |
+| Max steps | 2500 |
+| Scaler | Robust |
 | Loss | MAE |
-
----
-
-## საბოლოო შედეგები
-
-| Metric | Value |
-|--------|------:|
 | Validation WMAE | **1340.99** |
-| Holiday WMAE | **1356.24** |
-| Non-Holiday WMAE | **1335.12** |
-| Baseline WMAE | **2245.16** |
-| Improvement over Baseline | **904.17** |
-| Improvement (%) | **40.27%** |
+| Holiday WMAE | 1356.24 |
+| Non-holiday WMAE | 1335.12 |
+| Improvement over baseline | **40.27%** |
+
+DLinear-მა აჩვენა, რომ სწორად შერჩეული decomposition window-ით მარტივი linear architecture-იც კონკურენტუნარიანია, თუმცა რთული არაწრფივი pattern-ების სწავლაში N-BEATS-ს ჩამორჩა.
 
 ---
 
-## ანალიზი
+## Temporal Fusion Transformer
 
-DLinear-მა მნიშვნელოვნად გააუმჯობესა საბაზისო (Store-Department Median) მოდელის შედეგი და Validation Set-ზე დაახლოებით **40%-იანი გაუმჯობესება** აჩვენა. ექსპერიმენტებმა აჩვენა, რომ მოდელის მუშაობაზე ყველაზე დიდი გავლენა მოახდინა Input Size-ის, Batch Size-ისა და Learning Rate-ის ცვლილებამ, ხოლო Moving Average Window-ის სწორად შერჩევამ დამატებით გააუმჯობესა პროგნოზის ხარისხი.
+### მიდგომა
 
-მიუხედავად იმისა, რომ DLinear გამოირჩევა ძალიან მარტივი არქიტექტურითა და სწრაფი ტრენინგით, საბოლოო შედეგებით იგი მაინც ჩამორჩა N-BEATS მოდელს. ეს მოსალოდნელიც იყო, რადგან DLinear მხოლოდ Trend-ისა და Seasonality-ის ხაზობრივ მოდელირებას ახდენს, მაშინ როდესაც N-BEATS უფრო ღრმა არაწრფივი არქიტექტურაა და უკეთ სწავლობს Walmart-ის გაყიდვების მონაცემებში არსებულ რთულ დამოკიდებულებებს.
+TFT აერთიანებს recurrent layers-ს, attention-ს, variable selection networks-ს, gating-სა და static/time-varying covariates-ის დამუშავებას. იგი გამოყენებულია **global multivariate** მოდელად.
 
-თუმცა მიღებული შედეგები ადასტურებს, რომ სწორად შერჩეული ჰიპერპარამეტრების შემთხვევაში DLinear წარმოადგენს სწრაფ, სტაბილურ და კონკურენტუნარიან საბაზისო Deep Learning მოდელს დროითი რიგების პროგნოზირების ამოცანებისთვის.
+Feature ჯგუფები:
 
+- calendar/holiday: 8 feature;
+- MarkDown values და existence flags;
+- external: Temperature, Fuel Price, CPI, Unemployment;
+- static: Size და Store Type one-hot features.
 
+### სრული future dataframe-ის პრობლემა
 
+TFT-ს prediction-ისთვის სჭირდება:
 
-# Temporal Fusion Transformer (TFT)
+```text
+ყველა training unique_id × მომდევნო 14 კვირა
+```
 
-## მოდელის მიმოხილვა
+Validation dataframe არასრული იყო, ამიტომ `make_future_dataframe()`-ით შეიქმნა სრული grid და დაემატა future covariates. Evaluation კვლავ მხოლოდ რეალურად არსებულ validation rows-ზე შესრულდა. Fallback-მდე missing იყო 23 prediction row, რომლებიც 10 unseen series-ს ეკუთვნოდა.
 
-Temporal Fusion Transformer (TFT) არის Deep Learning არქიტექტურა, რომელიც შექმნილია მრავალსაფეხურიანი დროითი რიგების პროგნოზირებისთვის. მოდელი აერთიანებს რამდენიმე განსხვავებულ მექანიზმს:
+### ექსპერიმენტების განვითარება
 
-* recurrent layers-ს მოკლევადიანი დროითი დამოკიდებულებების დასამუშავებლად;
-* attention მექანიზმს გრძელვადიანი კავშირების დასაფიქსირებლად;
-* variable selection network-ებს სხვადასხვა Feature-ის მნიშვნელობის შესასწავლად;
-* gating და residual connections-ს ინფორმაციის ნაკადის გასაკონტროლებლად;
-* static და time-varying covariates-ის ცალ-ცალკე დამუშავებას.
+TFT-ის გამოყენების მთავარი მოტივაცია იყო არა მხოლოდ target history-ის, არამედ წინასწარ ცნობილი future information-ის გამოყენება. თეორიულად calendar, holiday, MarkDown, store type და macroeconomic features მოდელს საშუალებას აძლევს forecast-ის მიზეზებიც გაითვალისწინოს. პრაქტიკაში კი მდიდარი feature set ყოველთვის უკეთესი არ აღმოჩნდა.
 
-TFT-ის მთავარი უპირატესობაა, რომ მას შეუძლია ერთდროულად გამოიყენოს:
+Target-only baseline შედარებით სუსტი იყო. Calendar features-ის დამატებამ შედეგი 1675.41-მდე გააუმჯობესა, რადგან კვირის სეზონურობა და holiday indicator-ები სუფთა და წინასწარ ცნობილი signal-ებია. Static Store Type/Size-ის დამატებამ score გააუარესა; სავარაუდოდ ეს ინფორმაცია Department-level განსხვავებების ასახვისთვის ზედმეტად ზოგადი იყო. MarkDown feature-ებმა sparsity და noise შეიტანეს, ხოლო ყველა exogenous variable-ის ერთდროულმა გამოყენებამ optimization უფრო რთული გახადა.
 
-* target-ის წარსული მნიშვნელობები;
-* წინასწარ ცნობილი მომავლის ცვლადები;
-* დროში უცვლელი static ინფორმაცია;
-* კალენდარული, ეკონომიკური და promotional Feature-ები.
+TFT-ის ექსპერიმენტები მნიშვნელოვანი უარყოფითი შედეგითაც დასრულდა: რთულ multivariate architecture-ს აუცილებლად არ აქვს უპირატესობა, თუ დამატებითი feature-ები სუსტი, sparse ან forecast horizon-ისთვის არასაიმედოა. ამ მონაცემებზე მცირე calendar-only configuration ყველაზე სტაბილური იყო.
 
-ამ პროექტში TFT გამოყენებული იყო როგორც **Global Forecasting Model**. თითოეული `(Store, Dept)` წყვილი ცალკე დროით რიგს წარმოადგენდა, თუმცა ერთი საერთო მოდელი სწავლობდა ყველა Store-Department სერიაზე ერთდროულად.
+### ექსპერიმენტები
 
-მოდელის ძირითადი input სვეტები იყო:
+| ექსპერიმენტი | Validation WMAE | დასკვნა |
+|---|---:|---|
+| Target-only, hidden 32 | 2025.54 | capacity არასაკმარისი იყო |
+| Target-only, hidden 64 | 1862.73 | larger model უკეთესი |
+| Initial multivariate | 1941.22 | ბევრი feature ავტომატურად არ ეხმარება |
+| **Calendar only** | **1675.41** | **საუკეთესო TFT** |
+| Calendar + Static | 1847.92 | coarse Store features არ დაეხმარა |
+| Calendar + MarkDown | 1972.45 | sparsity/noise |
+| Calendar + MarkDown tuned | 1809.40 | holiday score გაუმჯობესდა, overall არა |
+| Calendar + Static + MarkDown | 2883.55 | optimization მკვეთრად გაუარესდა |
+| All exogenous | 1923.88 | external signal სუსტი აღმოჩნდა |
 
-* `unique_id` — Store-Department წყვილის იდენტიფიკატორი;
-* `ds` — კვირის თარიღი;
-* `y` — `Weekly_Sales`.
+### საუკეთესო კონფიგურაცია
 
-TFT-ის ექსპერიმენტებში გამოყენებული იყო NeuralForecast ბიბლიოთეკის იმპლემენტაცია.
+| პარამეტრი | მნიშვნელობა |
+|---|---|
+| Input size / horizon | 104 / 14 |
+| Future exogenous | 8 calendar/holiday features |
+| Static features | None |
+| Hidden size / heads | 64 / 4 |
+| Learning rate | 0.001 |
+| Batch size | 32 |
+| Dropout | 0.10 |
+| Max steps | 2500 |
+| Scaler | Robust |
+| Loss | MAE |
+| Validation WMAE | **1675.41** |
+| Improvement over baseline | **25.38%** |
+
+TFT-ის მთავარი უპირატესობა — მდიდარი exogenous information — ამ dataset-ზე სრულად ვერ გამოვიყენეთ. მცირე და სუფთა calendar feature set-მა უკეთ იმუშავა, ვიდრე ყველა feature-ის ერთდროულმა დამატებამ.
 
 ---
 
-## გამოყენებული Feature-ები
+## Prophet
 
-TFT-ისთვის Feature-ები რამდენიმე ჯგუფად დაიყო.
+### მიდგომა
 
-### Calendar და Holiday Feature-ები
+Prophet გამოყენებულია **per-series** რეჟიმში: თითოეული Store–Department წყვილისთვის ცალკე მოდელი სწავლობს trend-ს, yearly seasonality-სა და holiday effects-ს.
 
-ეს ცვლადები წინასწარ ცნობილია და ამიტომ გამოიყენებოდა future exogenous variables-ად:
+დაახლოებით **3,062 series** წარმატებით fit-დებოდა, ხოლო მოკლე/პრობლემური series-ებისთვის გამოიყენებოდა fallback.
 
-* `IsHoliday_int`;
-* `Month`;
-* `Week_sin`;
-* `Week_cos`;
-* `is_superbowl`;
-* `is_labor_day`;
-* `is_thanksgiving`;
-* `is_christmas`.
+### ექსპერიმენტების განვითარება
 
-`Week_sin` და `Week_cos` კვირის ნომერს ციკლურად წარმოადგენდა. ასეთი წარმოდგენა ეხმარება მოდელს გაითვალისწინოს, რომ წლის ბოლო და მომდევნო წლის დასაწყისი ერთმანეთთან სეზონურად ახლოსაა.
+Prophet-ის ექსპერიმენტები მიზნად ისახავდა trend-ის, yearly seasonality-ისა და holiday effect-ის ცალკე მოდელირებას. განსხვავებით global მოდელებისგან, აქ თითოეული Store–Department series-ისთვის დამოუკიდებელი Prophet იტრენინგებოდა. ეს მიდგომა ინტერპრეტირებადია, თუმცა მოკლე და sparse series-ებში ნაკლები ინფორმაციის გაზიარება შეუძლია.
 
-ცალკეული holiday flags დაემატა იმისათვის, რომ მოდელს Super Bowl-ის, Labor Day-ის, Thanksgiving-ისა და Christmas-ის განსხვავებული გაყიდვების pattern-ები ესწავლა.
+Additive holiday model კარგი საწყისი შედეგი იყო. Holiday component-ის ამოღებამ WMAE გააუარესა, რაც მიუთითებს, რომ დღესასწაულების explicit modeling სასარგებლო იყო. Multiplicative seasonality იდეალურად უნდა გამოდგომოდა retail series-ებს, სადაც seasonal spike ხშირად series-ის level-ის პროპორციულია, მაგრამ რამდენიმე სერიაში არარეალურად დიდი forecast შეიქმნა. პროგნოზის historical maximum-ის 1.5-ჯერ მნიშვნელობაზე შეზღუდვამ extreme outputs გააკონტროლა და საუკეთესო 1428.88 WMAE მოგვცა.
 
-### MarkDown Feature-ები
+### ექსპერიმენტები
 
-Promotional ინფორმაციისთვის გამოყენებული იყო:
+| ექსპერიმენტი | Validation WMAE | შეფასება |
+|---|---:|---|
+| Additive + holidays | 1455.25 | ძლიერი baseline |
+| Additive, no holidays | 1559.01 | holiday information სასარგებლოა |
+| Multiplicative + holidays | 1536.02 | რამდენიმე exploded forecast |
+| Multiplicative + damped | 1645.69 | underfit |
+| Additive + damped | 1524.87 | baseline-ს ვერ აჯობა |
+| Additive + loose | 1480.66 | overfit |
+| **Multiplicative + capped** | **1428.88** | **საუკეთესო Prophet** |
 
-* `MarkDown1`–`MarkDown5`;
-* `MarkDown1_exists`–`MarkDown5_exists`.
+### საბოლოო მოდელი
 
-პირველი ხუთი Feature აღწერდა MarkDown-ის რაოდენობრივ მნიშვნელობებს, ხოლო `_exists` სვეტები მიუთითებდა, არსებობდა თუ არა შესაბამისი promotional ჩანაწერი.
+| პარამეტრი | მნიშვნელობა |
+|---|---|
+| Seasonality mode | Multiplicative |
+| Holidays | Super Bowl, Labor Day, Thanksgiving, Christmas |
+| Prediction cap | 1.5 × series historical maximum |
+| Fallback | Series mean → global mean |
+| Validation WMAE | **1428.88** |
 
-### External Feature-ები
-
-External Feature-ების ჯგუფში შედიოდა:
-
-* `Temperature`;
-* `Fuel_Price`;
-* `CPI`;
-* `Unemployment`.
-
-### Static Feature-ები
-
-Store-ის დროში უცვლელი მახასიათებლები გამოიყენებოდა static exogenous variables-ად:
-
-* `Size`;
-* `Type_A`;
-* `Type_B`;
-* `Type_C`.
-
-Store Type თავდაპირველად categorical ცვლადი იყო და შემდეგ one-hot encoding-ით გარდაიქმნა.
+Prediction capping-მა extreme multiplicative forecasts შეზღუდა და Prophet-ის საუკეთესო შედეგი შექმნა.
 
 ---
 
-## მონაცემების სტრუქტურული პრობლემა და სრული Future DataFrame
+## ARIMA
 
-TFT-ის იმპლემენტაციის დროს გამოვლინდა მონაცემების მნიშვნელოვანი სტრუქტურული თავისებურება: ყველა `Store + Dept` დროითი რიგი სრულად უწყვეტი არ იყო.
+### მიდგომა
 
-Time-based split-ის შემდეგ:
+ARIMA თითოეულ Store–Department series-ს დამოუკიდებლად ამუშავებს და მხოლოდ target-ის ისტორიას იყენებს. მოდელი აერთიანებს autoregressive, differencing და moving-average კომპონენტებს.
 
-* training ნაწილში იყო **3,321** უნიკალური Store-Department სერია;
-* validation ნაწილში იყო **3,104** სერია;
-* **227** სერია არსებობდა training-ში, მაგრამ validation-ში აღარ გვხვდებოდა;
-* **10** სერია პირველად მხოლოდ validation პერიოდში ჩნდებოდა;
-* მხოლოდ **2,803** სერიას ჰქონდა validation-ის ყველა 14 კვირის observation.
+### ექსპერიმენტების ინტერპრეტაცია
 
-TFT-ს future covariates-ის გამოყენებისას პროგნოზისთვის სჭირდება სრული კომბინაცია:
+ARIMA-ს მთავარი შეზღუდვა ის იყო, რომ მას explicit 52-კვირიანი seasonal component არ ჰქონდა. `(2,1,1)` configuration-ში differencing გამოიყენებოდა, თუმცა Walmart-ის ბევრი series აშკარა მუდმივ trend-ს არ შეიცავდა და differencing-მა სასარგებლო level information ნაწილობრივ დაკარგა. `(2,0,1)` უკეთესი აღმოჩნდა, მაგრამ 2139.43 WMAE მხოლოდ მცირედით სჯობდა median baseline-ს.
 
-```text
-ყველა training unique_id × ყველა მომავალი კვირა
-```
+ეს შედეგი გვიჩვენებს, რომ მოკლე autoregressive dependence საკმარისი არ არის ისეთი retail მონაცემებისთვის, სადაც ერთი წლის წინანდელი იგივე კვირა განსაკუთრებით ინფორმაციულია.
 
-Validation dataframe ასეთი სრული ბადე არ იყო. ამიტომ მისი პირდაპირ `futr_df`-ად გამოყენება იწვევდა შეცდომას:
+### ექსპერიმენტები
 
-```text
-There are missing combinations of ids and times in futr_df.
-```
+| Order | Validation WMAE |
+|---|---:|
+| ARIMA `(2,1,1)` | 2214.93 |
+| **ARIMA `(2,0,1)`** | **2139.43** |
 
-პრობლემის გადასაჭრელად შეიქმნა სრული future dataframe:
-
-1. `make_future_dataframe()` ქმნიდა ყველა training series-ისთვის შემდეგ 14 კვირას;
-2. თითოეულ `Store-Date` კომბინაციას ემატებოდა შესაბამისი future covariates;
-3. მოწმდებოდა duplicate და missing კომბინაციები;
-4. შეფასება საბოლოოდ მხოლოდ validation-ში რეალურად არსებულ observation-ებზე ხდებოდა.
-
-Validation-ში პირველად გამოჩენილი 10 სერიისთვის მოდელს training history არ ჰქონდა. ამიტომ დაკარგული prediction-ები ივსებოდა hierarchical fallback-ით:
-
-```text
-Store-Dept median
-→ Dept median
-→ Store median
-→ Global median
-```
-
-TFT-ის საბოლოო run-ებში fallback-მდე missing იყო 23 prediction row, რომლებიც 10 unseen series-ს ეკუთვნოდა.
+ARIMA `(2,0,1)` baseline-ს მცირე სხვაობით აჯობა, მაგრამ წლიური სეზონურობის არქონის გამო holiday spikes და გრძელვადიანი recurring pattern-ები ვერ ისწავლა.
 
 ---
 
-## საერთო Training Setup
+## Seasonal AutoARIMA
 
-TFT-ის ექსპერიმენტებში ძირითადად გამოყენებული იყო:
+### მიდგომა
 
-* Forecast Horizon: 14 კვირა;
-* Validation Split: ბოლო 3 თვე;
-* Loss Function: MAE;
-* Evaluation Metric: Weighted Mean Absolute Error;
-* Target: `Weekly_Sales`;
-* Target Transform: None;
-* Missing Target Strategy: Linear Interpolation;
-* Batch Size: 32;
-* Robust Scaler;
-* Random Seed: 42;
-* Start Padding: Enabled;
-* Internal Validation და Early Stopping.
+Seasonal AutoARIMA ARIMA-ს seasonal კომპონენტს ამატებს. Weekly მონაცემებისთვის გამოყენებულია:
 
-`start_padding_enabled=True` გამოყენებული იყო იმისათვის, რომ შედარებით მოკლე series-ებიც მოხვედრილიყო training window-ებში.
+```text
+season_length = 52
+```
 
-ყველა მნიშვნელოვანი run დალოგილი იყო MLflow-ში.
+AutoARIMA თითოეული series-ისთვის ავტომატურად ეძებს შესაბამის non-seasonal და seasonal order-ს.
+
+### ექსპერიმენტების ინტერპრეტაცია
+
+Seasonal AutoARIMA-ში 52-კვირიანი პერიოდულობის დამატებამ ჩვეულებრივ ARIMA-სთან შედარებით დაახლოებით 700 WMAE-ის გაუმჯობესება მოიტანა. საინტერესოა, რომ უბრალო Seasonal Naive baseline-იც 1467.97-მდე მივიდა: გასული წლის იგივე კვირის პირდაპირ გამეორება უკვე ძალიან ძლიერი forecast იყო. AutoARIMA-მ ამ seasonal reference-ს მოკლევადიანი autoregressive და moving-average კორექტირებები დაუმატა და შედეგი 1450.84-მდე შეამცირა.
+
+უფრო ფართო search space-მა პრაქტიკულად იგივე score მისცა, მაგრამ computation გაზარდა. ამიტომ საბოლოოდ small stepwise search შევინარჩუნეთ — იგი თითქმის იმავე ხარისხს ნაკლები დროით იძლეოდა.
+
+### ექსპერიმენტები
+
+| ექსპერიმენტი | Validation WMAE |
+|---|---:|
+| Seasonal Naive (52) | 1467.97 |
+| **Seasonal AutoARIMA — small search** | **1450.84** |
+| Seasonal AutoARIMA — medium search | ≈1451 |
+| Non-seasonal AutoARIMA | ≈2253 |
+
+### საუკეთესო შედეგი
+
+| პარამეტრი | მნიშვნელობა |
+|---|---|
+| Season length | 52 |
+| Search | Stepwise, restricted seasonal space |
+| Missing target | Linear interpolation |
+| Validation WMAE | **1450.84** |
+| Improvement over baseline | **35.30%** |
+
+52-კვირიანი სეზონურობა იყო მთავარი მიზეზი, რის გამოც SARIMA-მ ჩვეულებრივ ARIMA-ს მკვეთრად აჯობა.
 
 ---
 
-# ექსპერიმენტების სტრატეგია
+## მოდელების საბოლოო შედარება
 
-TFT-ის ექსპერიმენტები ეტაპობრივად ჩატარდა. თავდაპირველად მოდელი მხოლოდ target-ის ისტორიას იყენებდა. შემდეგ შეიცვალა model capacity და ეტაპობრივად დაემატა სხვადასხვა Feature ჯგუფი.
+ქვემოთ მოცემულია თითოეული მოდელის საუკეთესო **სანდო, leakage-safe local validation** შედეგი.
 
-მთავარი მიზანი იყო გაგვეგო:
+| ადგილი | მოდელი | ოჯახი | საუკეთესო Validation WMAE | Baseline-თან გაუმჯობესება |
+|---:|---|---|---:|---:|
+| **1** | **XGBoost** | Global tree-based | **1254.85** | **44.11%** |
+| **2** | **N-BEATS** | Global deep learning | **1276.74** | **43.13%** |
+| **3** | **LightGBM** | Global tree-based | **1281.58** | **42.92%** |
+| 4 | DLinear | Global deep learning | 1340.99 | 40.27% |
+| 5 | Prophet | Per-series classical | 1428.88 | 36.36% |
+| 6 | Seasonal AutoARIMA | Per-series seasonal statistical | 1450.84 | 35.38% |
+| 7 | TFT | Global multivariate deep learning | 1675.41 | 25.38% |
+| 8 | ARIMA `(2,0,1)` | Per-series statistical | 2139.43 | 4.71% |
+| — | Store–Dept median baseline | Baseline | 2245.16 | — |
 
-* რამდენად საკმარისი იყო მხოლოდ historical sales;
-* ეხმარებოდა თუ არა მოდელს მეტი capacity;
-* რომელი exogenous Feature ჯგუფი შეიცავდა სასარგებლო signal-ს;
-* აუმჯობესებდა თუ არა შედეგს ყველა ხელმისაწვდომი Feature-ის ერთდროული გამოყენება.
+### საბოლოო გამარჯვებული
 
-## მნიშვნელოვანი ექსპერიმენტების შედეგები
+## **XGBoost — 1254.85 Validation WMAE**
 
-| ექსპერიმენტი                 | ძირითადი ცვლილება                                  | Validation WMAE | Holiday WMAE | Non-Holiday WMAE |
-| ---------------------------- | -------------------------------------------------- | --------------: | -----------: | ---------------: |
-| Target-only small            | Hidden 32, Heads 2, დამატებითი Feature-ების გარეშე |         2025.54 |      2111.00 |          1992.62 |
-| Target-only larger           | Hidden 64, Heads 4                                 |         1862.73 |  **1946.60** |          1830.42 |
-| Initial multivariate small   | ბევრი Feature, პატარა TFT                          |         1941.22 |      2169.39 |          1853.32 |
-| **Calendar only**            | 8 calendar და holiday Feature                      |     **1675.41** |      2005.28 |      **1548.34** |
-| Calendar + Static            | Calendar + Store Size და Type                      |         1847.92 |      2120.79 |          1742.80 |
-| Calendar + MarkDown          | Calendar + MarkDown values და flags                |         1972.45 |      2161.69 |          1899.55 |
-| Calendar + MarkDown tuned    | Input 52, Dropout 0.05, 4000 steps                 |         1809.40 |  **1833.33** |          1800.19 |
-| Calendar + Static + MarkDown | 18 future + 4 static Feature                       |         2883.55 |      2568.89 |          3004.76 |
-| All Exogenous                | Calendar, MarkDown, economic და static Feature-ები |         1923.88 |      2195.15 |          1819.37 |
+Local validation-ზე საუკეთესო მოდელი გახდა XGBoost. მისი წარმატება ერთი კონკრეტული ჰიპერპარამეტრით არ აიხსნება; შედეგი რამდენიმე სწორად შერჩეული კომპონენტის ერთობლიობამ შექმნა.
 
-ყველაზე დაბალი **Holiday WMAE** tuned Calendar + MarkDown მოდელმა მიიღო, მაგრამ Competition-ის ძირითადი შეფასების მეტრიკა overall Validation WMAE იყო. ამიტომ საბოლოო TFT მოდელად Calendar-only configuration შეირჩა.
+RichEncoder-მა თითოეულ series-სა და მის იერარქიულ ჯგუფებზე ისტორიული level მიაწოდა. `lag_52` და `lag_104` მოდელს აჩვენებდა, რა ხდებოდა იმავე სეზონურ კვირაში ერთი და ორი წლის წინ. YoY ratio აბსოლუტური გაყიდვების გარდა წლიური ზრდის ან კლების მიმართულებას ასახავდა. Calendar features მომავალშიც წინასწარ ცნობილია და inference-ზე უსაფრთხოდ გამოითვლება. L1 objective კი საბოლოო WMAE მეტრიკის absolute-error ბუნებას შეესაბამებოდა.
 
----
+ასევე მნიშვნელოვანი იყო რეგულარიზაცია. მაღალი depth და 2,000 ხე მოდელს საკმარის capacity-ს აძლევდა, მაგრამ `min_child_weight`, `reg_lambda` და `gamma` ზედმეტად სპეციფიკური patterns-ის დამახსოვრებას ზღუდავდა. სწორედ ამ ბალანსმა მოგვცა **1254.85 WMAE**, რაც median baseline-ზე დაახლოებით **44.1%-ით უკეთესია**.
 
-# რა იმუშავა
+თუმცა საბოლოო შედეგის ინტერპრეტაციისას ორი განსხვავებული დასკვნა უნდა გავმიჯნოთ:
 
-## Model Capacity-ის გაზრდა
+1. **Local validation-ის საუკეთესო მოდელია XGBoost — 1254.85 WMAE.**
+2. **Kaggle-ზე რეალურად შეფასებული მოდელია LightGBM — 2811.66 Private WMAE.**
 
-პატარა target-only TFT იყენებდა:
-
-```text
-Hidden Size = 32
-Attention Heads = 2
-```
-
-მისი Validation WMAE იყო:
-
-```text
-2025.54
-```
-
-Model capacity-ის გაზრდის შემდეგ:
-
-```text
-Hidden Size = 64
-Attention Heads = 4
-```
-
-Validation WMAE შემცირდა:
-
-```text
-1862.73
-```
-
-ეს მიუთითებს, რომ პატარა TFT-ის representation არასაკმარისი იყო ათასობით განსხვავებული Store-Department series-ის დასამუშავებლად.
-
-უფრო დიდ მოდელს უკეთ შეეძლო განსხვავებული მასშტაბების, სეზონური pattern-ებისა და Store-Department ქცევების საერთო representation-ში მოთავსება.
-
-## Calendar და Holiday Feature-ები
-
-ყველაზე დიდი გაუმჯობესება Calendar Feature-ებმა მოიტანა.
-
-Calendar-only TFT-ის შედეგი იყო:
-
-```text
-Validation WMAE = 1675.41
-```
-
-ეს target-only larger მოდელზე დაახლოებით 187 WMAE-ით უკეთესი იყო:
-
-```text
-1862.73 → 1675.41
-```
-
-Calendar Feature-ების წარმატების ძირითადი მიზეზები იყო:
-
-* მათი მნიშვნელობები prediction-ის მომენტში ზუსტად ცნობილია;
-* ისინი პრაქტიკულად არ შეიცავს missing values-ს;
-* არ აქვთ measurement noise ან extreme outlier-ები;
-* პირდაპირ ასახავს Walmart sales-ის ძლიერ წლიურ სეზონურობას;
-* holiday flags მოდელს მაღალი მნიშვნელობის კვირების ცალკე ამოცნობაში ეხმარება.
-
-ეს განსაკუთრებით მნიშვნელოვანია WMAE-სთვის, რადგან holiday observation-ებს ხუთმაგი წონა ენიჭება.
-
-## ზომიერი Model Complexity
-
-საუკეთესო შედეგი მიიღო მოდელმა, რომელსაც ჰქონდა საკმარისი capacity, მაგრამ არ იღებდა ზედმეტად ბევრ noisy Feature-ს.
-
-Calendar-only configuration-ში გამოყენებული იყო მხოლოდ რვა დამატებითი Feature. ეს საკმარისი აღმოჩნდა სეზონური ინფორმაციის მისაწოდებლად ისე, რომ input dimensionality და optimization ზედმეტად არ გართულებულიყო.
+XGBoost-ს Kaggle submission score არ აქვს, ამიტომ მისი local უპირატესობა პირდაპირ leaderboard უპირატესობად არ უნდა ჩაითვალოს.
 
 ---
 
-# რა ვერ იმუშავა
+## მთავარი დასკვნები
 
-## Static Store Feature-ები
+### 1. ისტორიული გაყიდვები და წლიური სეზონურობა ყველაზე ძლიერი signal იყო
 
-Calendar Feature-ებზე `Size` და `Type` ცვლადების დამატებამ Validation WMAE გააუარესა:
+`lag_52`, `lag_104`, seasonal period 52 და N-BEATS-ის trend/seasonality architecture ყველაზე სტაბილურ გაუმჯობესებებს ქმნიდა.
 
-```text
-1675.41 → 1847.92
-```
+### 2. მეტი feature ყოველთვის უკეთესი არ არის
 
-სავარაუდოდ, target history და `unique_id` უკვე შეიცავდა კონკრეტული Store-Department series-ის მასშტაბისა და ქცევის შესახებ მნიშვნელოვან ინფორმაციას.
+TFT-ზე Calendar-only კონფიგურაციამ ყველა exogenous feature-ის ერთდროულ გამოყენებას მკვეთრად აჯობა. MarkDown და external economic variables sparse, noisy ან target-ის granular დონესთან შეუსაბამო აღმოჩნდა.
 
-`Size` და `Type` შედარებით უხეში Store-level Feature-ებია. ისინი არ აღწერს Department-ის სპეციფიკურ განსხვავებებს და შეიძლება მსგავსი Type-ის ან Size-ის მქონე მაღაზიები ზედმეტად მსგავსად წარმოადგინოს.
+### 3. Leakage-სა და deployability-ს განსაკუთრებული ყურადღება სჭირდება
 
-ეს შედეგი არ ნიშნავს, რომ Store Size და Type ზოგადად უსარგებლოა. მხოლოდ ამ TFT configuration-ში მათი დამატება validation შედეგს არ აუმჯობესებდა.
+Recent lags, current-date aggregates და validation actuals-ზე აგებული features ხელოვნურად აუმჯობესებდა score-ს. საბოლოო შედარებაში მხოლოდ ისეთი features დარჩა, რომელთა გამოთვლაც რეალურ future inference-ზე შესაძლებელია.
 
-## Raw MarkDown Feature-ები
+### 4. Loss function-ის metric-თან შესაბამისობა მნიშვნელოვანია
 
-MarkDown Feature-ების დამატებამ overall WMAE ვერ გააუმჯობესა.
+LightGBM-ის `regression_l1` და XGBoost-ის `reg:absoluteerror` WMAE-ის absolute-error ბუნებას უკეთ მოერგო, განსაკუთრებით შესაბამის regularization-თან ერთად.
 
-მათი გამოყენების მთავარი პრობლემები სავარაუდოდ იყო:
+### 5. მარტივი მოდელი შეიძლება რთულ architecture-ს აჯობებდეს
 
-1. **Sparsity** — MarkDown მნიშვნელობების დიდი ნაწილი missing იყო და preprocessing-ში 0-ით ივსებოდა.
-2. **Skewed Distribution** — promotional თანხებს ძალიან განსხვავებული მასშტაბები და extreme values ჰქონდა.
-3. **Ambiguous Zero** — 0 შეიძლება ნიშნავდეს promotion-ის არარსებობას ან დაკარგული მნიშვნელობის ჩანაცვლებას.
-4. **Redundant Information** — raw value და `_exists` flag ნაწილობრივ ერთსა და იმავე ინფორმაციას იმეორებდა.
-5. **Granularity Mismatch** — MarkDown Store-Date დონეზე იყო მოცემული, target კი Store-Department დონეზე პროგნოზირდებოდა.
-6. **Limited Historical Coverage** — MarkDown ინფორმაცია training period-ის ყველა ნაწილში ერთნაირად ხელმისაწვდომი არ იყო.
+DLinear-მა TFT-ს აჯობა, ხოლო Seasonal Naive/SARIMA TFT-სთან შედარებით კონკურენტული იყო. Model complexity მხოლოდ მაშინ არის სასარგებლო, როდესაც data signal და tuning მას ამართლებს.
 
-Tuned Calendar + MarkDown მოდელმა holiday კვირებზე კარგი შედეგი აჩვენა:
+### 6. ერთი validation window სრული დასკვნისთვის საკმარისი არ არის
 
-```text
-Holiday WMAE = 1833.33
-```
-
-მაგრამ მისი non-holiday error უფრო მაღალი იყო, რის გამოც overall WMAE Calendar-only მოდელზე უარესი დარჩა.
-
-ეს ნიშნავს, რომ MarkDown ინფორმაციას გარკვეული სარგებელი ჰქონდა promotional და holiday პერიოდებში, მაგრამ მისი noise და sparsity ჩვეულებრივ კვირებზე generalization-ს აუარესებდა.
-
-## ყველა Feature-ის ერთდროული დამატება
-
-Calendar, Static და MarkDown Feature-ების ერთდროულმა გამოყენებამ ყველაზე ცუდი შედეგი გამოიწვია:
-
-```text
-Validation WMAE = 2883.55
-```
-
-ეს შედეგი Store-Department median baseline-საც ჩამორჩა.
-
-Variable Selection Network თეორიულად მნიშვნელოვანი Feature-ების არჩევას სწავლობს, მაგრამ ეს არ ნიშნავს, რომ noise-ის დამატება ყოველთვის უვნებელია.
-
-ამ შემთხვევაში მოდელს ერთდროულად მიეწოდა:
-
-* 18 future exogenous Feature;
-* 4 static Feature.
-
-Feature-ების რაოდენობის ზრდამ:
-
-* optimization გაართულა;
-* სასარგებლო calendar signal ნაკლებად მკაფიო გახადა;
-* sparse და skewed MarkDown inputs-ის გავლენა გაზარდა;
-* model complexity მნიშვნელოვნად გაზარდა.
-
-## External Economic Feature-ები
-
-ყველა exogenous Feature-ის გამოყენებამ Calendar-only შედეგს ვერ აჯობა, მიუხედავად მეტი RNN layer-ის, მეტი training step-ისა და შემცირებული dropout-ისა.
-
-სავარაუდო მიზეზები იყო:
-
-* `CPI` და `Unemployment` ნელა იცვლება და მოკლე horizon-ზე მცირე დამატებით ინფორმაციას იძლევა;
-* `Temperature` და `Fuel_Price` Store-level ცვლადებია, target კი Department-level;
-* ერთი და იგივე external value სხვადასხვა Department-ზე განსხვავებულად მოქმედებს;
-* Feature-ების რაოდენობის ზრდამ optimization გაართულა;
-* ძლიერი calendar signal უფრო noisy ცვლადებში დაიკარგა.
+14-კვირიანი local validation თანაბარ შედარებას უზრუნველყოფს, მაგრამ holiday-heavy Kaggle test-ის ზუსტი წარმომადგენელი არ არის. უკეთესი საბოლოო შეფასებისთვის სასურველია rolling-origin validation რამდენიმე სეზონურ ფანჯარაზე.
 
 ---
 
-# საუკეთესო TFT კონფიგურაცია
+## ტექნოლოგიები
 
-| Parameter                 | Value                       |
-| ------------------------- | --------------------------- |
-| Model                     | Temporal Fusion Transformer |
-| Model Type                | Global Multivariate         |
-| Target                    | Weekly_Sales                |
-| Forecast Horizon          | 14 კვირა                    |
-| Input Size                | 104 კვირა                   |
-| Future Exogenous Features | 8 Calendar/Holiday Feature  |
-| Static Features           | None                        |
-| Hidden Size               | 64                          |
-| Attention Heads           | 4                           |
-| RNN Layers                | 1                           |
-| Learning Rate             | 0.001                       |
-| Batch Size                | 32                          |
-| Valid Batch Size          | 64                          |
-| Windows Batch Size        | 512                         |
-| Dropout                   | 0.10                        |
-| Attention Dropout         | 0.0                         |
-| Max Steps                 | 2500                        |
-| Scaler                    | Robust                      |
-| Loss                      | MAE                         |
-| Early Stopping            | Enabled                     |
-| Start Padding             | Enabled                     |
-| Missing Target Strategy   | Linear Interpolation        |
-| Random Seed               | 42                          |
-| Validation WMAE           | **1675.41**                 |
-| Holiday WMAE              | **2005.28**                 |
-| Non-Holiday WMAE          | **1548.34**                 |
-| Baseline WMAE             | **2245.16**                 |
-| Improvement               | **569.75**                  |
-| Improvement (%)           | **25.38%**                  |
+- Python, pandas, NumPy;
+- scikit-learn;
+- LightGBM, XGBoost;
+- NeuralForecast / PyTorch;
+- Prophet;
+- statsforecast / AutoARIMA;
+- MLflow და DagsHub;
+- Google Colab;
+- Kaggle.
 
 ---
 
-# რატომ ვერ აჯობა TFT-მა N-BEATS-სა და DLinear-ს
+**კონკურსი:** [Kaggle — Walmart Recruiting: Store Sales Forecasting](https://www.kaggle.com/competitions/walmart-recruiting-store-sales-forecasting)
+**DagsHub MLflow:** [MLFlow logs](https://dagshub.com/izere23/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting.mlflow/#/experiments)
 
-საუკეთესო TFT შედეგი იყო:
+**შეფასების მეტრიკა:** WMAE  
 
-```text
-Validation WMAE = 1675.41
-```
-
-ეს Store-Department median baseline-ზე მნიშვნელოვნად უკეთესია, მაგრამ ჩამორჩა:
-
-```text
-N-BEATS = 1276.74
-DLinear = 1340.99
-```
-
-ამის რამდენიმე სავარაუდო მიზეზი არსებობს.
-
-## 1. TFT-ის არქიტექტურა უფრო რთულია
-
-TFT აერთიანებს recurrent layers-ს, attention-ს, gating-ს, static encoders-სა და variable selection-ს.
-
-ასეთი მოდელი უფრო რთულად ოპტიმიზდება და ხშირად საჭიროებს:
-
-* უფრო მეტ training data-ს;
-* უფრო ხანგრძლივ tuning-ს;
-* covariates-ის ფრთხილ შერჩევას;
-* model capacity-ისა და regularization-ის სწორ დაბალანსებას.
-
-Walmart dataset-ში ათასობით series იყო, თუმცა თითოეული კონკრეტული weekly series მხოლოდ რამდენიმე წლის ისტორიას შეიცავდა. ასეთი sequence length შეიძლება არასაკმარისი იყოს TFT-ის სრული შესაძლებლობების სტაბილურად გამოსაყენებლად.
-
-## 2. TFT-ის მთავარი უპირატესობა სრულად ვერ გამოვიყენეთ
-
-TFT განსაკუთრებით ძლიერია მაშინ, როდესაც დამატებითი covariates target-ზე მკაფიო და სტაბილურ გავლენას ახდენს.
-
-ამ პროექტში ყველაზე სასარგებლო მხოლოდ Calendar Feature-ები აღმოჩნდა.
-
-Static, MarkDown და external variables-მა საერთო შედეგი ვერ გააუმჯობესა. შესაბამისად, TFT-ის დამატებითი სირთულე საკმარისი ხარისხის exogenous signal-ით ვერ გამართლდა.
-
-## 3. Store-Level Feature-ები და Department-Level Target
-
-ბევრი covariate მოცემული იყო Store-Date დონეზე, ხოლო target Store-Department დონეზე.
-
-მაგალითად, ერთი და იგივე:
-
-* Temperature;
-* CPI;
-* Fuel Price;
-* MarkDown;
-
-მაღაზიის ყველა Department-ს მიეწოდებოდა, მიუხედავად იმისა, რომ მათი გავლენა Department-ების მიხედვით შეიძლება მნიშვნელოვნად განსხვავდებოდეს.
-
-ამიტომ მოდელს არ ჰქონდა პირდაპირი ინფორმაცია იმის შესახებ, კონკრეტული Store-level Feature როგორ მოქმედებდა კონკრეტულ Department-ზე.
-
-## 4. Holiday Spikes-ის პროგნოზირება რთული იყო
-
-საუკეთესო TFT-ის Holiday WMAE იყო:
-
-```text
-2005.28
-```
-
-რაც non-holiday შედეგზე მნიშვნელოვნად უარესია:
-
-```text
-1548.34
-```
-
-მოდელმა ზოგადი calendar და seasonal structure კარგად ისწავლა, მაგრამ holiday spikes-ის ზუსტი მასშტაბის პროგნოზირება გაუჭირდა.
-
-Holiday weeks განსხვავდება არა მხოლოდ თარიღით, არამედ Store-ის, Department-ისა და კონკრეტული წლის მიხედვითაც. მხოლოდ holiday flag ყოველთვის საკმარისი არ არის spike-ის ზომის დასადგენად.
-
-## 5. N-BEATS და DLinear უკეთ მოერგო მონაცემის ძირითად სტრუქტურას
-
-N-BEATS პირდაპირ target history-დან სწავლობდა trend და seasonality pattern-ებს და Walmart-ის რთული, არაწრფივი seasonal სტრუქტურა კარგად აითვისა.
-
-DLinear უფრო მარტივი მოდელია, მაგრამ მისი trend და seasonal decomposition ამ მონაცემისთვის ეფექტური inductive bias აღმოჩნდა.
-
-TFT-ს უფრო ფართო შესაძლებლობები ჰქონდა, თუმცა დამატებითი complexity და exogenous Feature-ების noise საბოლოო შედეგში უპირატესობად ვერ გადაიქცა.
-
-## 6. ერთი 14-კვირიანი Validation Split
-
-ყველა მოდელი ერთსა და იმავე ბოლო 14-კვირიან validation period-ზე შეფასდა, რაც მოდელებს შორის სამართლიან შედარებას უზრუნველყოფდა.
-
-თუმცა ერთი validation period შეიძლება TFT-ის სრული შესაძლებლობის შესაფასებლად არასაკმარისი იყოს. სხვა სეზონურ პერიოდში ან rolling validation-ის პირობებში model ranking შესაძლოა ნაწილობრივ განსხვავებული ყოფილიყო.
-
-საბოლოო Kaggle test horizon 39 კვირაა, ამიტომ 14-კვირიანი validation პირველ რიგში model development და მოდელებს შორის ერთიანი შედარებისთვის გამოიყენებოდა.
-
----
-
-# დასკვნა
-
-Temporal Fusion Transformer-მა Store-Department median baseline მნიშვნელოვნად გააუმჯობესა და აჩვენა, რომ calendar და holiday Feature-ების გამოყენება Walmart sales forecasting-ში სასარგებლოა.
-
-საუკეთესო შედეგი Calendar-only configuration-მა მიიღო:
-
-```text
-Validation WMAE = 1675.41
-Baseline WMAE   = 2245.16
-Improvement     = 25.38%
-```
-
-ექსპერიმენტების მთავარი დასკვნები იყო:
-
-* პატარა TFT-ს არასაკმარისი capacity ჰქონდა;
-* hidden size-ისა და attention head-ების გაზრდამ target-only შედეგი გააუმჯობესა;
-* Calendar და Holiday Feature-ებმა ყველაზე დიდი დადებითი ეფექტი გამოიწვია;
-* Static Store Feature-ებმა შედეგი ვერ გააუმჯობესა;
-* raw MarkDown values sparse, skewed და noisy აღმოჩნდა;
-* Feature-ების დიდი რაოდენობით ერთდროულმა დამატებამ optimization გაართულა;
-* მეტი Feature, მეტი layer და მეტი training step ავტომატურად უკეთეს შედეგს არ ნიშნავდა;
-* საუკეთესო შედეგი მიიღო მცირე, სუფთა და მაღალი ხარისხის Feature ჯგუფმა.
-
-მიუხედავად იმისა, რომ TFT საბოლოოდ N-BEATS-სა და DLinear-ს ჩამორჩა, მისი ექსპერიმენტები მნიშვნელოვანი იყო. მათ აჩვენა, რომ რთული multivariate forecasting architecture მხოლოდ მაშინ არის ეფექტური, როდესაც დამატებითი covariates საკმარისად ინფორმაციული, სუფთა და target-ის granular დონესთან შესაბამისია.
-
-ამ პროექტში ყველაზე ეფექტური აღმოჩნდა არა ყველა ხელმისაწვდომი Feature-ის გამოყენება, არამედ მცირე და მაღალი ხარისხის Calendar/Holiday Feature ჯგუფის შერჩევა.
-
-
-
-# ARIMA
-
-## მოდელის მიმოხილვა
-
-ARIMA (AutoRegressive Integrated Moving Average) წარმოადგენს კლასიკურ უნივარიატულ დროითი რიგების პროგნოზირების მოდელს, რომელიც მომავალი მნიშვნელობების პროგნოზირებისთვის მხოლოდ ისტორიულ target მნიშვნელობებს იყენებს. მოდელი შედგება სამი ძირითადი კომპონენტისგან:
-
-- **AR (AutoRegressive)** – იყენებს წინა პერიოდების მნიშვნელობებს.
-- **I (Integrated)** – დიფერენცირების საშუალებით აშორებს ტრენდს და სერიას სტაციონარულს ხდის.
-- **MA (Moving Average)** – ითვალისწინებს წინა პროგნოზების შეცდომებს.
-
-ARIMA არ იყენებს დამატებით feature-ებს, როგორიცაა `IsHoliday`, `Temperature`, `Fuel_Price`, `CPI`, `Unemployment` ან `MarkDown` ცვლადები. თითოეული `(Store, Department)` წყვილი დამოუკიდებელ დროით რიგად განიხილება და თითოეულისთვის ცალკე მოდელი იტრენინგება (local univariate approach).
-
----
-
-## ჩატარებული ექსპერიმენტები
-
-ARIMA-ს შემთხვევაში მიზანი იყო სხვადასხვა `(p, d, q)` პარამეტრების გავლენის შეფასება და საუკეთესო კონფიგურაციის პოვნა.
-
-ექსპერიმენტებში იცვლებოდა:
-
-- ავტორეგრესიული რიგი (`p`)
-- დიფერენცირების რაოდენობა (`d`)
-- მოძრავი საშუალოს რიგი (`q`)
-
-ყველა ექსპერიმენტში უცვლელი იყო:
-
-- 14-კვირიანი validation პერიოდი;
-- `Weekly_Sales` როგორც target;
-- დაკარგული მნიშვნელობების შევსება lineარული ინტერპოლაციით;
-- ერთნაირი preprocessing pipeline;
-- hierarchical fallback სტრატეგია იმ შემთხვევებისთვის, როდესაც რომელიმე სერიისთვის პროგნოზი ვერ მიიღებოდა.
-
-| ექსპერიმენტი | აღწერა | Validation WMAE |
-|--------------|--------|----------------:|
-| ARIMA (2,1,1) | პირველი რიგის დიფერენცირებით | **2214.93** |
-| ARIMA (2,0,1) | დიფერენცირების გარეშე | **2139.43** |
-
-საუკეთესო შედეგი მიიღო **ARIMA (2,0,1)** მოდელმა, რომელმაც Validation მონაცემებზე მიაღწია **2139.43 WMAE**-ს, რაც baseline მოდელთან შედარებით დაახლოებით **4.6%-იან გაუმჯობესებას** წარმოადგენს.
-
----
-
-## შედეგების ანალიზი
-
-სხვადასხვა order-ის გამოცდის მიუხედავად, ARIMA-მ ვერ შეძლო Walmart-ის გაყიდვების დინამიკის ზუსტად აღწერა. პროგნოზების დიდი ნაწილი საშუალო მნიშვნელობის გარშემო იყო კონცენტრირებული და ვერ ასახავდა გაყიდვების მკვეთრ ზრდასა და შემცირებას.
-
-ამის მთავარი მიზეზია, რომ ARIMA მხოლოდ მოკლევადიან დამოკიდებულებებს სწავლობს და არ ითვალისწინებს წლიურ სეზონურობას. Walmart-ის მონაცემებში კი გაყიდვები ძლიერ არის დამოკიდებული ყოველწლიურად განმეორებად მოვლენებზე, როგორიცაა **Thanksgiving**, **Christmas**, **Labor Day** და სხვა დღესასწაულები. შედეგად, მოდელმა ვერ შეძლო სადღესასწაულო პერიოდებში არსებული გაყიდვების პიკების სწორად პროგნოზირება და მნიშვნელოვნად ჩამორჩა როგორც თანამედროვე deep learning მოდელებს, ასევე seasonal statistical მოდელებს.
-
-ამ ექსპერიმენტებმა აჩვენა, რომ მხოლოდ `(p, d, q)` პარამეტრების შერჩევა საკმარისი არ არის ამ ამოცანისთვის და საჭიროა სეზონურობის გათვალისწინებაც.
-
----
-
-# Seasonal AutoARIMA (SARIMA)
-
-## მოდელის მიმოხილვა
-
-ARIMA-ს შედეგების ანალიზის შემდეგ გადავედით **Seasonal AutoARIMA** მოდელზე.
-
-Seasonal AutoARIMA წარმოადგენს ARIMA-ს გაფართოებას, რომელიც კლასიკურ კომპონენტებთან ერთად ითვალისწინებს სეზონურობასაც. Walmart-ის მონაცემები ყოველკვირეულია, ამიტომ seasonal period შეირჩა **52 კვირა**, რაც მოდელს საშუალებას აძლევს ისწავლოს წინა წლის ანალოგიური პერიოდის ქცევა.
-
-გარდა ამისა, AutoARIMA ავტომატურად არჩევს თითოეული `(Store, Department)` სერიისთვის საუკეთესო ARIMA და Seasonal ARIMA პარამეტრებს, რაც საშუალებას იძლევა სხვადასხვა სერია განსხვავებული მოდელით დამუშავდეს.
-
----
-
-## ჩატარებული ექსპერიმენტები
-
-Seasonal AutoARIMA-ს შემთხვევაში შეფასდა რამდენიმე განსხვავებული search space.
-
-ექსპერიმენტებში იცვლებოდა:
-
-- `max_p`
-- `max_q`
-- `max_P`
-- `max_Q`
-- `max_order`
-- seasonal differencing (`D`)
-
-ასევე შედარებისთვის გამოვიყენეთ **Seasonal Naive (52)** მოდელი, რომელიც პროგნოზად წინა წლის იგივე კვირის მნიშვნელობას იყენებს.
-
-| ექსპერიმენტი | აღწერა | Validation WMAE |
-|--------------|--------|----------------:|
-| Seasonal Naive (52) | წინა წლის იგივე კვირა | **1467.97** |
-| AutoARIMA Seasonal (Small Search Space) | შეზღუდული SARIMA search | **1450.84** |
-| AutoARIMA Seasonal (Medium Search Space) | გაფართოებული SARIMA search | **≈1451** |
-| AutoARIMA (Non-seasonal) | სეზონურობის გარეშე | **≈2253** |
-
-საუკეთესო შედეგი მიიღო **Seasonal AutoARIMA (Small Search Space)** მოდელმა, რომელმაც Validation მონაცემებზე მიაღწია **1450.84 WMAE**-ს, რაც baseline მოდელთან შედარებით დაახლოებით **35.3%-იან გაუმჯობესებას** წარმოადგენს.
-
----
-
-## შედეგების ანალიზი
-
-Seasonal AutoARIMA-მ მნიშვნელოვნად აჯობა ყველა ფიქსირებული order-ის მქონე ARIMA მოდელს.
-
-ამის ორი ძირითადი მიზეზი არსებობს.
-
-პირველი მიზეზია **52-კვირიანი სეზონურობის გათვალისწინება**. Walmart-ის გაყიდვები ძლიერ არის დამოკიდებული ყოველწლიურად განმეორებად მოვლენებზე, ამიტომ წინა წლის შესაბამისი პერიოდის ინფორმაციის გამოყენება მნიშვნელოვნად ზრდის პროგნოზირების სიზუსტეს.
-
-მეორე მიზეზია **AutoARIMA-ს ავტომატური order selection**. განსხვავებით ARIMA-ს ექსპერიმენტებისგან, სადაც ყველა სერიაზე ერთი და იგივე `(p, d, q)` გამოიყენებოდა, AutoARIMA თითოეული `(Store, Department)` სერიისთვის დამოუკიდებლად არჩევს ყველაზე შესაბამის კონფიგურაციას. შედეგად, სხვადასხვა ტიპის გაყიდვების მქონე სერიები უკეთ ერგება საკუთარ დინამიკას.
-
-განსაკუთრებით დიდი გაუმჯობესება დაფიქსირდა სადღესასწაულო პერიოდებში, რადგან seasonal კომპონენტმა შეძლო ყოველწლიურად განმეორებადი გაყიდვების პიკების სწავლა, რაც ჩვეულებრივ ARIMA მოდელს არ შეეძლო.
-
----
-
-# მოდელების შედარება
-
-| მოდელი | საუკეთესო Validation WMAE |
-|--------|--------------------------:|
-| ARIMA (2,0,1) | **2139.43** |
-| Seasonal AutoARIMA | **1450.84** |
-
-Seasonal AutoARIMA-მ ARIMA-სთან შედარებით Validation შეცდომა დაახლოებით **32%-ით შეამცირა**, ხოლო baseline მოდელთან შედარებით დაახლოებით **35%-იანი გაუმჯობესება** აჩვენა.
-
-ჩატარებულმა ექსპერიმენტებმა აჩვენა, რომ Walmart-ის გაყიდვების მონაცემებში ერთ-ერთი ყველაზე მნიშვნელოვანი ფაქტორი სწორედ **წლიური სეზონურობაა**. ამიტომ Seasonal AutoARIMA მნიშვნელოვნად უფრო ეფექტური აღმოჩნდა, ვიდრე ჩვეულებრივი ARIMA, რომელიც მხოლოდ მოკლევადიან დამოკიდებულებებს ითვალისწინებს.
