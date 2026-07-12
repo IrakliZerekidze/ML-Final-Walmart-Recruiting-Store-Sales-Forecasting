@@ -1,24 +1,3 @@
-"""
-preprocessing.py
-Reusable, model-agnostic preprocessing pipeline for the Walmart Store Sales
-Forecasting project. Import this in every experiment notebook instead of
-re-writing cells.
-
-Usage in a notebook:
-
-    from preprocessing import run_pipeline, weighted_mae
-
-    train_part, valid_part, train_full, test_full = run_pipeline(
-        data_dir="/kaggle/input/competitions/walmart-recruiting-store-sales-forecasting",
-        out_dir="/kaggle/working/processed",
-    )
-
-Or, if the parquet files already exist from a previous run:
-
-    from preprocessing import load_processed, weighted_mae
-    train_part, valid_part, train_full, test_full = load_processed("/kaggle/working/processed")
-"""
-
 from pathlib import Path
 import numpy as np
 import pandas as pd
