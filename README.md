@@ -14,7 +14,7 @@ Walmart-ის მაღაზიებისა და დეპარტამ
 
 > **საუკეთესო local validation შედეგი:** **XGBoost — 1254.85 WMAE**  
 > **საუკეთესო Deep Learning შედეგი:** **N-BEATS — 1276.74 WMAE**  
-> **Kaggle-ზე შეფასებული მოდელი:** **XGBoost — 2787.92 Private WMAE**
+> **Kaggle-ზე შეფასებული მოდელი:** **XGBoost — 2666.14 Private WMAE**
 
 ---
 
@@ -28,9 +28,11 @@ Walmart-ის მაღაზიებისა და დეპარტამ
 6. [N-BEATS](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_NBEATS.ipynb)
 7. [DLinear](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_DLinear.ipynb)
 8. [Temporal Fusion Transformer](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_TFT.ipynb)
-9. [Prophet](#prophet)
+9. [Prophet](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_prophet.ipynb)
 10. [ARIMA](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_ARIMA.ipynb)
 11. [Seasonal AutoARIMA](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_SARIMA.ipynb)
+12. [TimesFM](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_experiment_TimesFM.ipynb)
+13. [Model Inference](https://github.com/IrakliZerekidze/ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/blob/main/model_inference.ipynb)
 
 ## პროექტის სტრუქტურა
 
@@ -62,10 +64,10 @@ ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/
 │       L1 objective-ითა და hyperparameter tuning-ით.
 │
 ├── model_experiment_NBEATS.ipynb
-│   └── N-BEATS global univariate forecasting ექსპერიმენტები:
-│       
+│   └── N-BEATS global univariate forecasting ექსპერიმენტები.
+│
 ├── model_experiment_DLinear.ipynb
-│   └── DLinear-ის ექსპერიმენტები
+│   └── DLinear-ის ექსპერიმენტები.
 │
 ├── model_experiment_TFT.ipynb
 │   └── Temporal Fusion Transformer-ის ექსპერიმენტები calendar, static,
@@ -75,9 +77,21 @@ ML-Final-Walmart-Recruiting-Store-Sales-Forecasting/
 │   └── ARIMA ექსპერიმენტები თითოეული Store–Department სერიისთვის,
 │       სხვადასხვა order-ით, interpolation-ითა და fallback სტრატეგიით.
 │
-└── model_experiment_SARIMA.ipynb
-    └── Seasonal ARIMA / AutoARIMA ექსპერიმენტები 52-კვირიანი
-        სეზონურობის გამოყენებით.
+├── model_experiment_SARIMA.ipynb
+│   └── Seasonal ARIMA / AutoARIMA ექსპერიმენტები 52-კვირიანი
+│       სეზონურობის გამოყენებით.
+│
+├── model_experiment_prophet.ipynb
+│   └── Prophet per-series ექსპერიმენტები: additive/multiplicative
+│       seasonality, competition holidays და outlier capping.
+│
+├── model_experiment_TimesFM.ipynb
+│   └── TimesFM 2.0 (500M) foundation model-ის zero-shot ექსპერიმენტები:
+│       context length sweep და log-space forecasting, ვარჯიშის გარეშე.
+│
+└── model_inference.ipynb
+    └── რეგისტრირებული საუკეთესო მოდელის (XGBoost) ჩატვირთვა MLflow
+        registry-იდან და test.csv-ზე პროგნოზი / Kaggle submission.
 ```
 
 ## ამოცანა და მონაცემები
@@ -412,8 +426,8 @@ Short lags და current-date target aggregates უარყოფილია,
 
 | Split | WMAE |
 |---|---:|
-| Public leaderboard | 2643.13 |
-| Private leaderboard | **2787.92** |
+| Public leaderboard | 2534.41 |
+| Private leaderboard | **2666.14** |
 
 Local და Kaggle შედეგებს შორის სხვაობის მთავარი მიზეზია validation/test სეზონური mismatch და holiday-heavy test horizon.
 
@@ -779,7 +793,7 @@ RichEncoder-მა თითოეულ series-სა და მის იე�
 
 ასევე მნიშვნელოვანი იყო რეგულარიზაცია. მაღალი depth და 2,000 ხე მოდელს საკმარის capacity-ს აძლევდა, მაგრამ `min_child_weight`, `reg_lambda` და `gamma` ზედმეტად სპეციფიკური patterns-ის დამახსოვრებას ზღუდავდა. სწორედ ამ ბალანსმა მოგვცა **1254.85 WMAE**, რაც median baseline-ზე დაახლოებით **44.1%-ით უკეთესია**.
 
-**Kaggle-ზე რეალურად შეფასებული საუკეთესო მოდელია XGBoost — 2787.92 Private WMAE.**
+**Kaggle-ზე რეალურად შეფასებული საუკეთესო მოდელია XGBoost — 2666.14 Private WMAE.**
 
 ---
 
